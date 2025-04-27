@@ -35,8 +35,9 @@ generate_prompt_addin <- function() {
   cat("\nPrompt written to ", outfile,"")
 
   if (requireNamespace("clipr", quietly = TRUE)) {
-    clipr::write_clip(prompt)
-    cat("and copied to clipboard.")
+    res = try(clipr::write_clip(prompt), silent=TRUE)
+    if (!is(res, "try-error"))
+      cat("and copied to clipboard.")
   }
   cat("\nEstimated token count: ", guess_token_num(prompt),"\n")
 
@@ -46,8 +47,8 @@ generate_prompt_addin <- function() {
 
   ## --- NEW: select the whole document --------------------------------------
   ctx <- rstudioapi::getSourceEditorContext()
-  if (normalizePath(ctx$path, winslash = "/") ==
-      normalizePath(outfile, winslash = "/")) {
+  if (isTRUE(try(normalizePath(ctx$path) ==
+      normalizePath(outfile)))) {
     last_line <- length(ctx$contents)
     rng <- rstudioapi::document_range(
              rstudioapi::document_position(1, 0),

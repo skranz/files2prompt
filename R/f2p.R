@@ -127,7 +127,7 @@ fp_filetext = function(file_path, group, verbose=TRUE) {
 }
 
 group_root_dir = function(group, root_dir = ".") {
-  group[["root_dir"]] %||% "."
+  group[["root_dir"]] %||% root_dir
 }
 
 fp_find_group_files = function(group, root_dir = ".") {
