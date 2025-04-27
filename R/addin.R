@@ -29,7 +29,8 @@ generate_prompt_addin <- function() {
   prompt <- files2prompt(config_file)
 
   # 4. Save & copy
-  outfile <- file.path(root_dir, "files2prompt.txt")
+  #outfile <- file.path(root_dir, "files2prompt.txt")
+  outfile = file.path(tempdir(),"files2prompt.txt")
   writeLines(prompt, outfile)
   cat("\nPrompt written to ", outfile,"")
 
