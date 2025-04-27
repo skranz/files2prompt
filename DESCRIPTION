@@ -1,0 +1,18 @@
+Package: files2prompt
+Type: Package
+Title: RStudio addin to create prompt from code or text files in a project directory
+Version: 0.1.0
+Author: Sebastian Kranz
+Maintainer: Sebastian Kranz <sebastian.kranz@uni-ulm.de>
+Description: Can be customized using TOML based specifications.
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Imports:
+    restorepoint,
+    stringi,
+    RcppTOML (>= 0.2.3)
+Suggests:
+    rstudioapi,
+    clipr
+RoxygenNote: 7.2.3

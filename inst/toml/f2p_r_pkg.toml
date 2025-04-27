@@ -1,0 +1,102 @@
+
+################################################
+# Which files go in?
+# Typically, you would either specify include_files
+# or exclude_files
+# We use globs instead of regular expressions
+################################################
+
+# Here all included files will be defined
+# in the corresponding groups below.
+include_files = '''
+'''
+
+exclude_files = '''
+*f2p_*.toml
+'''
+
+################################################
+# Global prompt template
+# You can refer to specified variables or
+# [[groups]]
+# Special variable {files} contains all files
+# not yet part of an explicitly included group
+################################################
+template = '''
+Below are relevant files from my R project.
+
+################################################
+# R project DESCRIPTION file:
+################################################
+
+{{DESCRIPTION}}
+
+################################################
+# R code files:
+################################################
+
+{{R}}
+
+{{README}}
+
+
+{{task}}
+'''
+
+task = '''
+
+#######################################################
+# YOUR TASK
+#######################################################
+
+Please describe the code base and propose improvements.
+'''
+
+###########################################################
+# file_template Will be applied to each found file
+# and the results will be pasted together
+###########################################################
+
+file_template = '''
+
+# FILE: {{filename}}
+```
+{{filetext}}
+```
+# END OF FILE: {{filename}}
+
+-----------------------------------------------------------
+'''
+
+
+################################################
+# Special handling for R code
+################################################
+[[R]]
+include_files  = '''
+R/*.R
+R/*.r
+'''
+
+[[README]]
+include_files = "README.md"
+group_template = '''
+################################################
+# Readme file
+################################################
+{{files}}
+'''
+file_template = '''
+```md
+{{filetext}}
+```
+'''
+
+[[DESCRIPTION]]
+include_files = "DESCRIPTION"
+file_template = '''
+```
+{{filetext}}
+```
+'''
+

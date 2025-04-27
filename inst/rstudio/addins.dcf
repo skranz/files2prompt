@@ -1,0 +1,4 @@
+Name: Files To Prompt
+Description: Build a LLM prompt containing R project files
+Binding: generate_prompt_addin
+Interactive: false

@@ -1,0 +1,7 @@
+# A simple prompt that includes all R files
+
+include_files  = '''
+*.R
+*.r
+'''
+
