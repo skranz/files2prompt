@@ -11,7 +11,11 @@ install.packages(
   repos = c("https://skranz.r-universe.dev", getOption("repos"))
 )
 ```
+Or directly from Github:
 
+```
+remotes::install_github("skranz/files2prompt")
+```
 ---
 
 ## 1. Usage & RStudio Add‑in (default specs)

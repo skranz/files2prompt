@@ -11,7 +11,7 @@ LazyData: true
 Imports:
     restorepoint,
     stringi,
-    RcppTOML (>= 0.2.3)
+    RcppTOML
 Suggests:
     rstudioapi,
     clipr
