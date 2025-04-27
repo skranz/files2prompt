@@ -80,21 +80,21 @@ addin_find_config_toml <- function() {
 
   ## 3 — dir from option ------------------------------------------------------
   if (is.list(opt) && !is.null(opt$dir) && dir.exists(opt$dir)) {
-    tomls <- sort(list.files(opt$dir, pattern = "\\.f2p_\\.toml$", full.names = TRUE))
+    tomls <- sort(list.files(opt$dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
     if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 
   ## 4 — project root ---------------------------------------------------------
   proj <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
   if (!is.null(proj) && dir.exists(proj)) {
-    tomls <- sort(list.files(proj, pattern = "\\.f2p_\\.toml$", full.names = TRUE))
+    tomls <- sort(list.files(proj, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
     if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 
   ## 5 — working directory ---------------------------------------------------------
   wd <- getwd()
   if (!is.null(wd) && dir.exists(wd)) {
-    tomls <- sort(list.files(wd, pattern = "\\.f2p_\\.toml$", full.names = TRUE))
+    tomls <- sort(list.files(wd, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
     if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 

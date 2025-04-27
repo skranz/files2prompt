@@ -7,18 +7,18 @@ Below are relevant files from my R project.
 ```
 Package: files2prompt
 Type: Package
-Title: Creates prompt from text or code files based on a TOML specification
+Title: RStudio addin to create prompt from code or text files in a project directory
 Version: 0.1.0
 Author: Sebastian Kranz
 Maintainer: Sebastian Kranz <sebastian.kranz@uni-ulm.de>
-Description: Creates prompt from text or code files based on a TOML specification
+Description: Can be customized using TOML based specifications.
 License: MIT
 Encoding: UTF-8
 LazyData: true
 Imports:
     restorepoint,
     stringi,
-    RcppTOML (>= 0.2.3)
+    RcppTOML
 Suggests:
     rstudioapi,
     clipr
@@ -115,21 +115,21 @@ addin_find_config_toml <- function() {
 
   ## 3 — dir from option ------------------------------------------------------
   if (is.list(opt) && !is.null(opt$dir) && dir.exists(opt$dir)) {
-    tomls <- sort(list.files(opt$dir, pattern = "\\.f2p_\\.toml$", full.names = TRUE))
+    tomls <- sort(list.files(opt$dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
     if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 
   ## 4 — project root ---------------------------------------------------------
   proj <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
   if (!is.null(proj) && dir.exists(proj)) {
-    tomls <- sort(list.files(proj, pattern = "\\.f2p_\\.toml$", full.names = TRUE))
+    tomls <- sort(list.files(proj, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
     if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 
   ## 5 — working directory ---------------------------------------------------------
   wd <- getwd()
   if (!is.null(wd) && dir.exists(wd)) {
-    tomls <- sort(list.files(wd, pattern = "\\.f2p_\\.toml$", full.names = TRUE))
+    tomls <- sort(list.files(wd, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
     if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 
@@ -195,6 +195,7 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}") {
   if (is.null(root_dir)) {
     root_dir = cfg[["root_dir"]] %||% "."
   }
+  cat(paste0("\nCreate prompt for files in ", normalizePath(root_dir), " based on ", basename(config_file), ".\n"))
 
   subgroup_names = names(cfg)[sapply(cfg, is.list)]
 
@@ -216,6 +217,8 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}") {
     groups[[g]]$.files = setdiff(files, all_files)
     all_files = union(all_files, files)
   }
+  cat("\nWill add ", NROW(all_files), " files to prompt.\n")
+
 
   main_tpl = .main$template
 
@@ -276,7 +279,10 @@ file_pattern_to_regex = function(str) {
   paste0('(', glob2rx(vec),')', collapse="|")
 }
 
-fp_filetext = function(file_path, group) {
+fp_filetext = function(file_path, group, verbose=TRUE) {
+  if (verbose) {
+    cat(paste0("Add ", basename(file_path), "\n"))
+  }
   paste0(readLines(file_path, warn=FALSE), collapse="\n")
 }
 
@@ -287,6 +293,10 @@ group_root_dir = function(group, root_dir = ".") {
 fp_find_group_files = function(group, root_dir = ".") {
   restore.point("fp_find_files")
   inc = file_pattern_to_regex(group[["include_files"]])
+  # If files_include specified: return no files
+  # this makes sense in TOML spec that include files
+  # only in subgroups
+  if (length(inc)==0) return(NULL)
   exc = file_pattern_to_regex(group[["exclude_files"]])
   root_dir = group_root_dir(group, root_dir)
 
@@ -427,7 +437,11 @@ install.packages(
   repos = c("https://skranz.r-universe.dev", getOption("repos"))
 )
 ```
+Or directly from Github:
 
+```
+remotes::install_github("skranz/files2prompt")
+```
 ---
 
 ## 1. Usage & RStudio Add‑in (default specs)

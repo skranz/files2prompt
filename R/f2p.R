@@ -35,7 +35,7 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}") {
   if (is.null(root_dir)) {
     root_dir = cfg[["root_dir"]] %||% "."
   }
-  cat("\nCreate prompt for files in ", root_dir, " based on ", basename(config_file), ".\n")
+  cat(paste0("\nCreate prompt for files in ", normalizePath(root_dir), " based on ", basename(config_file), ".\n"))
 
   subgroup_names = names(cfg)[sapply(cfg, is.list)]
 
@@ -121,7 +121,7 @@ file_pattern_to_regex = function(str) {
 
 fp_filetext = function(file_path, group, verbose=TRUE) {
   if (verbose) {
-    cat("\nAdd ", basename(file_path), "\n")
+    cat(paste0("Add ", basename(file_path), "\n"))
   }
   paste0(readLines(file_path, warn=FALSE), collapse="\n")
 }
@@ -133,6 +133,10 @@ group_root_dir = function(group, root_dir = ".") {
 fp_find_group_files = function(group, root_dir = ".") {
   restore.point("fp_find_files")
   inc = file_pattern_to_regex(group[["include_files"]])
+  # If files_include specified: return no files
+  # this makes sense in TOML spec that include files
+  # only in subgroups
+  if (length(inc)==0) return(NULL)
   exc = file_pattern_to_regex(group[["exclude_files"]])
   root_dir = group_root_dir(group, root_dir)
 
