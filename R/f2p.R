@@ -35,6 +35,7 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}") {
   if (is.null(root_dir)) {
     root_dir = cfg[["root_dir"]] %||% "."
   }
+  cat("\nCreate prompt for files in ", root_dir, " based on ", basename(config_file), ".\n")
 
   subgroup_names = names(cfg)[sapply(cfg, is.list)]
 
@@ -56,6 +57,8 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}") {
     groups[[g]]$.files = setdiff(files, all_files)
     all_files = union(all_files, files)
   }
+  cat("\nWill add ", NROW(all_files), " files to prompt.\n")
+
 
   main_tpl = .main$template
 
@@ -116,7 +119,10 @@ file_pattern_to_regex = function(str) {
   paste0('(', glob2rx(vec),')', collapse="|")
 }
 
-fp_filetext = function(file_path, group) {
+fp_filetext = function(file_path, group, verbose=TRUE) {
+  if (verbose) {
+    cat("\nAdd ", basename(file_path), "\n")
+  }
   paste0(readLines(file_path, warn=FALSE), collapse="\n")
 }
 
