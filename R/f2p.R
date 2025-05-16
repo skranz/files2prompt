@@ -11,8 +11,12 @@ example = function() {
 #' @param config_file Path to the TOML config file.
 #' @export
 fp_parse_config = function(config_file) {
+  if (!file.exists(config_file)) {
+    stop(paste0("file2prompt config_file ", config_file, " does not exist."))
+  }
   cfg = parseTOML(config_file, escape=FALSE)
   cfg$config_file = config_file
+  cfg
 }
 
 #' Build a prompt from text files
