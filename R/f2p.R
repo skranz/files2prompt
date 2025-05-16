@@ -7,6 +7,14 @@ example = function() {
   guess_token_num(main_prompt)
 }
 
+#' Parse a TOML confifugration file
+#' @param config_file Path to the TOML config file.
+#' @export
+fp_parse_config = function(config_file) {
+  cfg = parseTOML(config_file, escape=FALSE)
+  cfg$config_file = config_file
+}
+
 #' Build a prompt from text files
 #'
 #' Reads a TOML specification in the
@@ -25,12 +33,19 @@ example = function() {
 #' @importFrom stringi stri_match_all_regex
 #' @importFrom restorepoint restore.point
 #' @export
-files2prompt = function(config_file,root_dir = NULL, open = "{", close="}") {
+files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=NULL) {
   restore.point("files2prompt")
-  if (!file.exists(config_file))
-    stop(paste0("config_file ", config_file, " not found."))
 
-  cfg = parseTOML(config_file, escape=FALSE)
+  if (is.null(cfg)) {
+    if (!file.exists(config_file))
+      stop(paste0("config_file ", config_file, " not found."))
+    cfg = parseTOML(config_file, escape=FALSE)
+  } else {
+    config_file = cfg$config_file
+    if (is.null(config_file)) {
+      config_file = "custom config"
+    }
+  }
 
   if (is.null(root_dir)) {
     root_dir = cfg[["root_dir"]] %||% "."
