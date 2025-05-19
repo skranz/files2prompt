@@ -37,7 +37,7 @@ fp_parse_config = function(config_file) {
 #' @importFrom stringi stri_match_all_regex
 #' @importFrom restorepoint restore.point
 #' @export
-files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=NULL) {
+files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=NULL, verbose=1) {
   restore.point("files2prompt")
 
   if (is.null(cfg)) {
@@ -54,7 +54,8 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
   if (is.null(root_dir)) {
     root_dir = cfg[["root_dir"]] %||% "."
   }
-  cat(paste0("\nCreate prompt for files in ", normalizePath(root_dir), " based on ", basename(config_file), ".\n"))
+  if (verbose>0)
+    cat(paste0("\nCreate prompt for files in ", normalizePath(root_dir), " based on ", basename(config_file), ".\n"))
 
   subgroup_names = names(cfg)[sapply(cfg, is.list)]
 
@@ -76,7 +77,8 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
     groups[[g]]$.files = setdiff(files, all_files)
     all_files = union(all_files, files)
   }
-  cat("\nWill add ", NROW(all_files), " files to prompt.\n")
+  if (verbose>0)
+    cat("\nWill add ", NROW(all_files), " files to prompt.\n")
 
 
   main_tpl = .main$template
@@ -89,7 +91,7 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
     values = c(group, .main[setdiff(names(.main), names(group))])
     file_tpl = group$file_template
     if (is.null(file_tpl)) file_tpl = .main$file_template
-    values$filetext = sapply(group$.files, fp_filetext, group=group)
+    values$filetext = sapply(group$.files, fp_filetext, group=group, verbose = (verbose >= 2))
     # short file name
     values$filename = basename(group$.files)
     files_prompt = paste0(tpl_replace_whisker(file_tpl,values), collapse="\n")
