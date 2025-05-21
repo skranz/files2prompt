@@ -4,7 +4,14 @@
 \alias{files2prompt}
 \title{Build a prompt from text files}
 \usage{
-files2prompt(config_file, root_dir = NULL, open = "{", close = "}", cfg = NULL)
+files2prompt(
+  config_file,
+  root_dir = NULL,
+  open = "{",
+  close = "}",
+  cfg = NULL,
+  verbose = 1
+)
 }
 \arguments{
 \item{config_file}{Path to the TOML config file.}

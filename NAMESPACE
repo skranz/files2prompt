@@ -3,6 +3,7 @@
 export(files2prompt)
 export(fp_parse_config)
 export(guess_token_num)
+export(tpl_replace_whisker)
 importFrom(RcppTOML,parseTOML)
 importFrom(restorepoint,restore.point)
 importFrom(stringi,stri_detect_regex)
