@@ -187,7 +187,14 @@ fp_default_template = function() {
 
 fp_default_file_template = function() {
 "
-{{files}}
+# FILE: {{filename}}
+```
+{{filetext}}
+```
+# END OF FILE: {{filename}}
+
+---
+
 "
 }
 
