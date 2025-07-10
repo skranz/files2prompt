@@ -168,58 +168,88 @@ group_root_dir = function(group, root_dir = ".") {
   group[["root_dir"]] %||% root_dir
 }
 
+# f2p.R (New and Final fp_find_group_files)
+#' @importFrom tools glob2rx
+
 fp_find_group_files = function(group, root_dir = ".", values = list()) {
   restore.point("fp_find_files")
 
-  all_values = c(group, values)
-
-  include_str = group[["include_files"]]
-  exclude_str = group[["exclude_files"]]
-
-  if (!is.null(include_str)) {
-    include_str = tpl_replace_whisker(include_str, all_values)
-  }
-  if (!is.null(exclude_str)) {
-    exclude_str = tpl_replace_whisker(exclude_str, all_values)
+  # --- Process patterns (with template substitution) ---
+  all_values <- c(group, values)
+  process_patterns <- function(patterns_str) {
+    if (is.null(patterns_str) || nchar(patterns_str) == 0) return(character(0))
+    patterns_str <- tpl_replace_whisker(patterns_str, all_values)
+    vec <- stri_split_fixed(patterns_str, "\n")[[1]]
+    vec <- stri_trim_both(vec)
+    vec[nchar(vec) > 0]
   }
 
-  # Convert glob patterns to regex
-  inc = file_pattern_to_regex(include_str)
-  if (length(inc) == 0) return(NULL)
+  include_patterns <- process_patterns(group[["include_files"]])
+  if (length(include_patterns) == 0) return(NULL)
 
-  exc = file_pattern_to_regex(exclude_str)
+  exclude_patterns <- process_patterns(group[["exclude_files"]])
 
-  # Determine the search directory for this group and expand it
-  search_dir = path.expand(group_root_dir(group, root_dir))
+  # --- Find files using glob patterns (now with recursive support) ---
+  search_dir <- path.expand(group_root_dir(group, root_dir))
 
-  # list.files returns paths relative to search_dir, which is what we need for matching
-  files = list.files(search_dir, recursive = TRUE, full.names = FALSE, include.dirs = FALSE)
+  find_files_from_globs <- function(patterns) {
+    if (length(patterns) == 0) return(character(0))
 
-  # We need full paths later to read the files
-  full_files = list.files(search_dir, recursive = TRUE, full.names = TRUE, include.dirs = FALSE)
+    files <- lapply(patterns, function(pattern) {
+      p <- path.expand(pattern)
 
-  if (length(inc) > 0) {
-    keep = stri_detect_regex(files, inc)
-    files = files[keep]
-    full_files = full_files[keep]
+      # Handle recursive globstar `**`
+      if (grepl("/**/", p, fixed = TRUE)) {
+        parts <- strsplit(p, "/**/", fixed = TRUE)[[1]]
+        base_dir <- parts[1]
+        file_glob <- if (length(parts) > 1) parts[2] else "*"
+
+        if (!is_absolute_path(base_dir)) {
+          base_dir <- file.path(search_dir, base_dir)
+        }
+
+        if (!dir.exists(base_dir)) return(character(0))
+
+        # Use list.files for recursive search, converting glob to regex
+        list.files(
+          path = base_dir,
+          pattern = glob2rx(file_glob, trim.head = TRUE, trim.tail = TRUE),
+          recursive = TRUE,
+          full.names = TRUE
+        )
+      } else {
+        # Standard, non-recursive glob
+        if (!is_absolute_path(p)) {
+          p <- file.path(search_dir, p)
+        }
+        Sys.glob(p)
+      }
+    })
+
+    unique(unlist(files))
   }
-  if (length(exc) > 0) {
-    ignore = stri_detect_regex(files, exc)
-    files = files[!ignore]
-    full_files = full_files[!ignore]
-  }
 
-  names(full_files) = files
-  full_files
+  included_files <- find_files_from_globs(include_patterns)
+  excluded_files <- find_files_from_globs(exclude_patterns)
+
+  final_files <- setdiff(included_files, excluded_files)
+
+  if (length(final_files) == 0) return(NULL)
+
+  # --- Generate short names for display ({{filename}}) ---
+  norm_root <- normalizePath(root_dir, mustWork = FALSE)
+  short_names <- vapply(final_files, function(f) {
+    norm_f <- normalizePath(f, mustWork = FALSE)
+    if (startsWith(norm_f, norm_root)) {
+      sub(paste0(norm_root, .Platform$file.sep), "", norm_f, fixed = TRUE)
+    } else {
+      basename(f)
+    }
+  }, FUN.VALUE = character(1))
+
+  names(final_files) <- short_names
+  return(final_files)
 }
-
-
-fp_default_template = function() {
-"
-{{files}}
-"
-}
-
 fp_default_file_template = function() {
 "
 # FILE: {{filename}}
@@ -231,8 +261,4 @@ fp_default_file_template = function() {
 ---
 
 "
-}
-
-`%||%` <- function(x, y) {
-  if (is.null(x)) y else x
 }
