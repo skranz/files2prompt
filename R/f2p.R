@@ -144,7 +144,22 @@ fp_filetext = function(file_path, group, verbose=TRUE) {
   if (verbose) {
     cat(paste0("Add ", basename(file_path), "\n"))
   }
-  paste0(readLines(file_path, warn=FALSE), collapse="\n")
+
+  # Check if it's a data file by its extension
+  ext <- tolower(tools::file_ext(file_path))
+
+  if (ext %in% fp_data_extensions()) {
+    # It's a data file, so render a summary of it.
+    # The rendering function needs the group config for custom parameters.
+    tryCatch({
+      fp_render_data_file(file_path, group)
+    }, error = function(e) {
+      paste("Error processing data file", basename(file_path), ":\n", e$message)
+    })
+  } else {
+    # It's a regular text/code file, so read its content directly.
+    paste0(readLines(file_path, warn=FALSE), collapse="\n")
+  }
 }
 
 group_root_dir = function(group, root_dir = ".") {

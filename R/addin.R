@@ -46,12 +46,12 @@ generate_prompt_addin <- function() {
     proceed <- rstudioapi::showQuestion(
       title   = "Many R files detected",
       message = paste0(
-        "I found ", n_r_files, " R files in â", root_dir,
-        "â. Building a prompt from all of them may freeze RStudio.\n\n",
+        "I found ", n_r_files, " R files in ", root_dir,
+        "\nBuilding a prompt from all of them may freeze RStudio.\n\n",
         "Do you still want to continue?"
       ),
-      ok      = "Yes â continue",
-      cancel  = "No â abort"
+      ok      = "Yes continue",
+      cancel  = "No abort"
     )
     if (!isTRUE(proceed)) {
       cat("\nAborted.")
@@ -102,7 +102,7 @@ addin_find_config_toml <- function() {
                              file.exists(path)   &&
                              grepl("\\.toml$", path, ignore.case = TRUE)
 
-  ## 1 â active editor file ---------------------------------------------------
+  ## 1 active editor file ----------
   if (rstudioapi::isAvailable("1.1.287")) {
     ctx <- tryCatch(rstudioapi::getSourceEditorContext(),
                     error = function(e) NULL)
@@ -110,25 +110,26 @@ addin_find_config_toml <- function() {
       return(normalizePath(ctx$path, winslash = "/"))
   }
 
-  ## 2 â explicit option ------------------------------------------------------
+  ## 2 explicit option -------------
   opt <- getOption("file2prompt")
   if (is.list(opt) && is_toml(opt$toml_file))
     return(normalizePath(opt$toml_file, winslash = "/"))
 
-  ## 3 â dir from option ------------------------------------------------------
+  ## 3 dir from option ---------
   if (is.list(opt) && !is.null(opt$dir) && dir.exists(opt$dir)) {
     tomls <- sort(list.files(opt$dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
     if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 
-  ## 4 â project root ---------------------------------------------------------
+  ## 4 project root ----------
   proj <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
   if (!is.null(proj) && dir.exists(proj)) {
     tomls <- sort(list.files(proj, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
     if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 
-  ## 5 â working directory ---------------------------------------------------------
+
+  ## 5 working directory ---------------
   wd <- getwd()
   if (!is.null(wd) && dir.exists(wd)) {
     tomls <- sort(list.files(wd, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
@@ -136,7 +137,9 @@ addin_find_config_toml <- function() {
   }
 
 
-  ## 6 â fallback for R packages ---------------------------------------------
+
+
+  ## 6 fallback for R packages ---------------------------------------------
   if (!is.null(proj) && file.exists(file.path(proj, "DESCRIPTION"))) {
     pkg_tpl <- system.file("toml/f2p_r_pkg.toml",
                            package = "files2prompt", mustWork = FALSE)
@@ -144,7 +147,7 @@ addin_find_config_toml <- function() {
       return(pkg_tpl)
   }
 
-  ## 7 â generic default ------------------------------------------------------
+  ## 7 generic default ------------------------------------------------------
   def_tpl <- system.file("toml/f2p_default.toml",
                          package = "files2prompt", mustWork = FALSE)
   if (nzchar(def_tpl) && file.exists(def_tpl))
