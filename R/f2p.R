@@ -73,10 +73,12 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
   all_files = NULL
   g = ".main"
   for (g in names(groups)) {
-    files = fp_find_group_files(groups[[g]],root_dir=root_dir)
+    # Pass .main so that fp_find_group_files can use global vars for substitution
+    files = fp_find_group_files(groups[[g]], root_dir=root_dir, values=.main)
     groups[[g]]$.files = setdiff(files, all_files)
     all_files = union(all_files, files)
   }
+
   if (verbose>0)
     cat("\nWill add ", NROW(all_files), " files to prompt.\n")
 
@@ -166,25 +168,42 @@ group_root_dir = function(group, root_dir = ".") {
   group[["root_dir"]] %||% root_dir
 }
 
-fp_find_group_files = function(group, root_dir = ".") {
+fp_find_group_files = function(group, root_dir = ".", values = list()) {
   restore.point("fp_find_files")
-  inc = file_pattern_to_regex(group[["include_files"]])
-  # If files_include specified: return no files
-  # this makes sense in TOML spec that include files
-  # only in subgroups
-  if (length(inc)==0) return(NULL)
-  exc = file_pattern_to_regex(group[["exclude_files"]])
-  root_dir = group_root_dir(group, root_dir)
 
-  files = list.files(root_dir, recursive = TRUE,full.names = FALSE,include.dirs = FALSE)
-  full_files = list.files(root_dir, recursive = TRUE,full.names = TRUE,include.dirs = FALSE)
+  all_values = c(group, values)
 
-  if (length(inc)>0) {
+  include_str = group[["include_files"]]
+  exclude_str = group[["exclude_files"]]
+
+  if (!is.null(include_str)) {
+    include_str = tpl_replace_whisker(include_str, all_values)
+  }
+  if (!is.null(exclude_str)) {
+    exclude_str = tpl_replace_whisker(exclude_str, all_values)
+  }
+
+  # Convert glob patterns to regex
+  inc = file_pattern_to_regex(include_str)
+  if (length(inc) == 0) return(NULL)
+
+  exc = file_pattern_to_regex(exclude_str)
+
+  # Determine the search directory for this group and expand it
+  search_dir = path.expand(group_root_dir(group, root_dir))
+
+  # list.files returns paths relative to search_dir, which is what we need for matching
+  files = list.files(search_dir, recursive = TRUE, full.names = FALSE, include.dirs = FALSE)
+
+  # We need full paths later to read the files
+  full_files = list.files(search_dir, recursive = TRUE, full.names = TRUE, include.dirs = FALSE)
+
+  if (length(inc) > 0) {
     keep = stri_detect_regex(files, inc)
     files = files[keep]
     full_files = full_files[keep]
   }
-  if (length(exc)>0) {
+  if (length(exc) > 0) {
     ignore = stri_detect_regex(files, exc)
     files = files[!ignore]
     full_files = full_files[!ignore]
@@ -193,6 +212,7 @@ fp_find_group_files = function(group, root_dir = ".") {
   names(full_files) = files
   full_files
 }
+
 
 fp_default_template = function() {
 "
