@@ -1,44 +1,58 @@
-### Format of proposed changes to code or text files
+## Format of proposed changes to code or text files
 
 When you suggest changes to code or text files or completely new files, you MUST use the following format for each modification. Each change must be enclosed in a `!MODIFICATION` block.
 
-#### **Overall Structure**
+### Overall Structure
 
 Each modification block has three parts:
-1.  Start and end markers: `!MODIFICATION` and `!END_MODIFICATION`.
+1.  Start and end markers: `!MODIFICATION {{what}}` and `!END_MODIFICATION {{what}}`, where {{what}} is just a short reference to what is modified, file name or function name with with file. It will not be parsed but makes it easier for a human to understand blocks.
 2.  A metadata block in **TOML format**. This block ends with a `---` separator line.
 3.  A code payload block, which is a standard markdown code fence.
 
 ```
-!MODIFICATION
+!MODIFICATION {{what}}
 # TOML metadata goes here
 # ...
 ---
 ```language
 # New code payload goes here
 ```
-!END_MODIFICATION
+!END_MODIFICATION {{what}}
 ```
 
-The metadata block **MUST** contain an `operation` field, which can be either `"complete_file"` or `"modify_lines"`.
+### Modification Scope
+
+Each modification is of one of the following three scopes:
+
+* `file` (re-)writes a complete file
+
+* `function` (re-)writes a complete function (including comments above)
+
+* `lines` (re-)writes only specific lines in a file
+
+
+
+If more than two functions or more than two line edits will be performed in the same file, better rewrite the whole file using a `file` scope. For extremely long files also more smaller edits are ok.
+
+Function scope only works for R code files, but in R files it is preferred if one or two functions in a larger file are changed.
+
+The metadata block **MUST** contain a `scope` field, which can be `"file"`, `"function"`, or `"lines"`.
 
 ---
 
-### **Operation 1: `complete_file`**
+### **Scope 1: `file`**
 
 Use this to create a new file or to completely rewrite an existing one.
 
 **Required Fields:**
-*   `operation = "complete_file"`
+*   `scope = "file"`
 *   `file` (string): The relative path to the file.
 *   `is_new_file` (boolean): `true` if you are creating a new file, `false` if you are rewriting an existing one.
-
-**Optional Fields:**
 *   `description` (string): A brief explanation of the change. Always enclose into triple single quotes `'''...'''`.
 
 #### **Example 1.1: Creating a new file**
-!MODIFICATION
-operation = "complete_file"
+!MODIFICATION new_helpers.R
+scope = "file"
 file = "R/new_helpers.R"
 is_new_file = true
 description = '''Create a new file for helper functions.'''
@@ -49,11 +63,11 @@ say_hello <- function(name) {
   paste("Hello,", name)
 }
 ```
-!END_MODIFICATION
+!END_MODIFICATION new_helpers.R
 
 #### **Example 1.2: Rewriting an existing file**
-!MODIFICATION
-operation = "complete_file"
+!MODIFICATION README.md
+scope = "file"
 file = "README.md"
 is_new_file = false
 description = '''Rewrite the README to add installation instructions.'''
@@ -65,41 +79,52 @@ description = '''Rewrite the README to add installation instructions.'''
 
 Run `remotes::install_github("user/repo")` to install.
 ```
-!END_MODIFICATION
+!END_MODIFICATION README.md
 
 ---
 
-### **Operation 2: `modify_lines`**
+### **Scope 2: `function`**
 
-Use this for all granular changes: inserting, replacing, or deleting lines in an existing file. The behavior depends on the fields you provide.
+Use this to replace an existing function or to insert a new function. The new code payload should contain the complete function, including any preceding comments.
 
-*   **To Insert:** Provide `insert_at_line`.
-*   **To Replace:** Provide `insert_at_line`, `delete_from`, and `delete_to`.
-*   **To Delete:** Provide `delete_from` and `delete_to`. The code payload should be empty.
-
-**Required Fields:**
-*   `operation = "modify_lines"`
+#### **Fields for replacing an existing function:**
+*   `scope = "function"`
 *   `file` (string): The relative path to the file.
+*   `function_name` (string): The name of the function to be replaced.
+*   `description` (string): A brief explanation of the change. Always enclose into triple single quotes `'''...'''`.
 
-**Location Fields (use as needed):**
-*   `insert_at_line` (integer): The line number where the new code should be inserted.
-*   `delete_from` (integer): The first line number of the block to delete/replace.
-*   `delete_to` (integer): The last line number of the block to delete/replace.
+#### **Fields for inserting a new function:**
+*   `scope = "function"`
+*   `file` (string): The relative path to the file.
+*   `description` (string): A brief explanation of the change. Always enclose into triple single quotes `'''...'''`.
+*   **One of** the following fields to specify the insertion point. They are mutually exclusive.
+    *   `insert_top = true`: Insert at the top of the file.
+    *   `insert_bottom = true`: Insert at the bottom of the file.
+    *   `insert_before_fun = "function_name"`: Insert before the specified function.
+    *   `insert_after_fun = "function_name"`: Insert after the specified function.
 
-**Context & Description Fields (optional but strongly recommended for accuracy):**
-*   `description` (string): What are you changing and why? Use `'''...'''`.
-*   `context_before` (string): The content of the line just *before* the modification. Use `'''...'''`.
-*   `context_delete_first` (string): The content of the first line being deleted/replaced (`delete_from`). Use `'''...'''`.
-*   `context_delete_last` (string): The content of the last line being deleted/replaced (`delete_to`). Use `'''...'''`.
-*   `context_after` (string): The content of the line just *after* the modification. Use `'''...'''`.
 
-#### **Example 2.1: Inserting new lines**
-!MODIFICATION
-operation = "modify_lines"
+#### **Example 2.1: Replacing an existing function**
+!MODIFICATION calculate_sum utils.R
+scope = "function"
 file = "R/utils.R"
-insert_at_line = 10
-description = '''Add a new function `is_positive()`.'''
-context_before = '''}'''
+function_name = "calculate_sum"
+description = '''Update `calculate_sum` to handle NA values correctly.'''
+---
+```r
+#' Calculate the sum of a vector, ignoring NAs
+calculate_sum <- function(vec) {
+  sum(vec, na.rm = TRUE)
+}
+```
+!END_MODIFICATION calculate_sum utils.R
+
+#### **Example 2.2: Inserting a new function at the bottom of a file**
+!MODIFICATION is_positive in R/utils.R
+scope = "function"
+file = "R/utils.R"
+insert_bottom = true
+description = '''Add a new helper function to check for positivity.'''
 ---
 ```r
 
@@ -108,39 +133,59 @@ is_positive <- function(n) {
   n > 0
 }
 ```
-!END_MODIFICATION
+!END_MODIFICATION is_positive in R/utils.R
 
-#### **Example 2.2: Replacing a block of lines**
-!MODIFICATION
-operation = "modify_lines"
-file = "R/f2p.R"
-insert_at_line = 55
-delete_from = 55
-delete_to = 57
-description = '''Refactor the `guess_token_num` function for better accuracy.'''
-context_before = '''main_prompt'''
-context_delete_first = '''guess_token_num = function(txt, bytes_per_token=4) {'''
-context_delete_last = '''}'''
+#### **Example 2.3: Inserting a new function after a specific function**
+!MODIFICATION is_negative in R/utils.R
+scope = "function"
+file = "R/utils.R"
+insert_after_fun = "is_positive"
+description = '''Add a new helper function `is_negative` after `is_positive`.'''
 ---
 ```r
-guess_token_num = function(txt, bytes_per_token=3.8) {
-  # A more precise estimation
-  ceiling(nchar(txt, type = "bytes") / bytes_per_token)
+
+#' Check if a number is negative
+is_negative <- function(n) {
+  n < 0
 }
 ```
-!END_MODIFICATION
+!END_MODIFICATION is_negative in R/utils.R
 
-#### **Example 2.3: Deleting a block of lines**
-!MODIFICATION
-operation = "modify_lines"
-file = "f2p.R"
-delete_from = 1
-delete_to = 7
-description = '''Remove the old, obsolete example function.'''
-context_delete_first = '''example = function() {'''
-context_delete_last = '''}'''
-context_after = '''#' Parse a TOML confifugration file'''
+---
+
+### **Scope 3: `lines`**
+
+*   `scope = "lines"`
+*   `file` (string): The relative path to the file.
+**One of** the following fields to specify the insertion point. They are mutually exclusive.
+    *   `replace_lines` (string): Exact content of one or multiple subsequent lines that shall be replaced. Try to avoid multiple matches. Only first occurrence will be replaced. Always include complete lines.
+    *   `insert_after_lines` (string): Exact content of one or multiple subsequent lines AFTER which the content shall be added. The content always start a new line. Avoid multiple matches, in case insertion takes place after the first match.
+    *   `insert_top = true`: Insert at the opt of a file .
+    *   `insert_bottom = true`: Insert at the bottom of the file.
+    *   `insert_after_fun = "function_name"`: Insert after the specified function.
+*   `description` (string): A brief explanation of the change. Always enclose into triple single quotes `'''...'''`.
+
+
+#### **Example 3.1: Replacing a line**
+!MODIFICATION lines in DESCRIPTION
+scope = "lines"
+file = "DESCRIPTION"
+replace_lines = "Version: 0.0.1"
+description = '''Update the package version number in the DESCRIPTION file.'''
 ---
 ```
+Version: 0.0.2
 ```
-!END_MODIFICATION
+!END_MODIFICATION lines in DESCRIPTION
+
+#### **Example 3.2: Inserting after a line**
+!MODIFICATION lines in DESCRIPTION
+scope = "lines"
+file = "DESCRIPTION"
+insert_after_lines = "Imports:"
+description = '''Add dplyr to the Imports section in the DESCRIPTION file.'''
+---
+```
+    dplyr (>= 1.0.0)
+```
+!END_MODIFICATION lines in DESCRIPTION

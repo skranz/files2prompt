@@ -57,6 +57,9 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
   if (verbose>0)
     cat(paste0("\nCreate prompt for files in ", normalizePath(root_dir), " based on ", basename(config_file), ".\n"))
 
+  # Load snippets to be available in templates
+  snippets <- fp_load_snippets()
+
   subgroup_names = names(cfg)[sapply(cfg, is.list)]
 
   #main_files = fp_find_group_files(cfg, root_dir)
@@ -73,8 +76,8 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
   all_files = NULL
   g = ".main"
   for (g in names(groups)) {
-    # Pass .main so that fp_find_group_files can use global vars for substitution
-    files = fp_find_group_files(groups[[g]], root_dir=root_dir, values=.main)
+    # Pass .main and snippets so that fp_find_group_files can use global vars for substitution
+    files = fp_find_group_files(groups[[g]], root_dir=root_dir, values=c(.main, snippets))
     groups[[g]]$.files = setdiff(files, all_files)
     all_files = union(all_files, files)
   }
@@ -91,6 +94,7 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
     if (length(group$.files)==0) return(NULL)
     name = names(groups)[[i]]
     values = c(group, .main[setdiff(names(.main), names(group))])
+    values = c(values, snippets[!names(snippets) %in% names(values)]) # Add snippets
     file_tpl = group$file_template
     if (is.null(file_tpl)) file_tpl = .main$file_template
     values$filetext = sapply(group$.files, fp_filetext, group=group, verbose = (verbose >= 2))
@@ -114,6 +118,7 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
   values = .main
   values$files = paste0(unlist(prompts[!is_sep_group]), collapse="\n")
   values[names(groups[is_sep_group])] = prompts[is_sep_group]
+  values = c(values, snippets[!names(snippets) %in% names(values)]) # Add snippets
 
   main_prompt = tpl_replace_whisker(main_tpl, values)
   main_prompt
@@ -250,6 +255,27 @@ fp_find_group_files = function(group, root_dir = ".", values = list()) {
   names(final_files) <- short_names
   return(final_files)
 }
+
+#' Load template snippets from the package's `inst/snippets` directory.
+#' @return A named list where names are snippet basenames and values are content.
+#' @keywords internal
+fp_load_snippets <- function(package = "files2prompt") {
+  snippet_dir <- system.file("snippets", package = package, mustWork = FALSE)
+  if (!nzchar(snippet_dir)) return(list())
+
+  snippet_files <- list.files(snippet_dir, pattern = "\\.(md|txt)$", full.names = TRUE)
+  if (length(snippet_files) == 0) return(list())
+
+  content <- lapply(snippet_files, function(f) {
+    paste(readLines(f, warn = FALSE), collapse = "\n")
+  })
+
+  # Name the list elements by the file basename without extension
+  names(content) <- tools::file_path_sans_ext(basename(snippet_files))
+  content
+}
+
+
 fp_default_file_template = function() {
 "
 # FILE: {{filename}}

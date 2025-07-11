@@ -2,3 +2,8 @@ Name: Files To Prompt
 Description: Build a LLM prompt containing R project files
 Binding: generate_prompt_addin
 Interactive: false
+
+Name: Apply Modifications
+Description: Interactively review and apply code modifications from the AI response file.
+Binding: review_modifications_addin
+Interactive: true
