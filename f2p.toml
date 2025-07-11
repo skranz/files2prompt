@@ -38,6 +38,13 @@ Below are relevant files from my R project.
 
 {{R}}
 
+################################################
+# Prompt Snippets
+################################################
+
+{{snippets}}
+
+
 {{README}}
 
 
@@ -99,6 +106,10 @@ R/*.R
 R/*.r
 '''
 
+[[snippets]]
+include_files  = '''
+inst/snippets/*.*
+'''
 [[README]]
 include_files = "README.md"
 group_template = '''
