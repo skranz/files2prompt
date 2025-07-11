@@ -59,25 +59,6 @@ task = '''
 
 Please describe the code base and propose improvements.
 
-########################################################
-# Reply format
-########################################################
-
-You can interweave explanations and possibly concrete file changes in your answer.
-
-If your task involves updating or creating code or
-other files, please always write down the content of the complete new file.
-
-Follow the format as in this example
-
-!FILE new_r_file.R
-```r
-1+1
-```
-!END_FILE
-
-Make sure to use !FILE {filename} and END_FILE for the start and end lines of the file block. Don't add files that you do not change in your reply.
-
 '''
 
 ###########################################################

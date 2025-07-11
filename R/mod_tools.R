@@ -44,9 +44,9 @@ find_project_file <- function(file, root_dir) {
 #' Locate the AI response file for the modification add-in.
 #'
 #' Follows a search hierarchy to find the response file:
-#' 1. The currently active file in RStudio, if it ends with `.ai_resp.txt`.
-#' 2. A file named `ai_resp.txt` in the project root.
-#' 3. The first file matching `*.ai_resp.txt` in the project root.
+#' 1. The currently active file in RStudio, if it ends with `.ai_resp.md`.
+#' 2. A file named `ai_resp.md` in the project root.
+#' 3. The first file matching `*.ai_resp.md` in the project root.
 #'
 #' @return The path to the AI response file.
 #' @keywords internal
@@ -54,7 +54,7 @@ find_ai_response_file <- function() {
   # 1. Active editor file
   if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable("1.1.287")) {
     ctx <- tryCatch(rstudioapi::getSourceEditorContext(), error = function(e) NULL)
-    if (!is.null(ctx$path) && nzchar(ctx$path) && grepl("\\.ai_resp\\.txt$", ctx$path, ignore.case = TRUE)) {
+    if (!is.null(ctx$path) && nzchar(ctx$path) && grepl("\\.ai_resp\\.md$", ctx$path, ignore.case = TRUE)) {
       return(normalizePath(ctx$path, winslash = "/"))
     }
   }
@@ -62,17 +62,17 @@ find_ai_response_file <- function() {
   proj_dir <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
   if (is.null(proj_dir)) proj_dir <- getwd()
 
-  # 2. `ai_resp.txt` in project root
-  standard_file <- file.path(proj_dir, "ai_resp.txt")
+  # 2. `ai_resp.md` in project root
+  standard_file <- file.path(proj_dir, "ai_resp.md")
   if (file.exists(standard_file)) {
     return(normalizePath(standard_file, winslash = "/"))
   }
 
-  # 3. First `*.ai_resp.txt` in project root
-  pattern_files <- list.files(proj_dir, pattern = "\\.ai_resp\\.txt$", full.names = TRUE, ignore.case = TRUE)
+  # 3. First `*.ai_resp.md` in project root
+  pattern_files <- list.files(proj_dir, pattern = "\\.ai_resp\\.md$", full.names = TRUE, ignore.case = TRUE)
   if (length(pattern_files) > 0) {
     return(normalizePath(sort(pattern_files)[1], winslash = "/"))
   }
 
-  stop("Could not find an AI response file (e.g., 'ai_resp.txt' or '*.ai_resp.txt') in the project root or active editor.")
+  stop("Could not find an AI response file (e.g., 'ai_resp.md' or '*.ai_resp.md') in the project root or active editor.")
 }

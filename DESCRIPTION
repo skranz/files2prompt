@@ -8,7 +8,7 @@ Description: Can be customized using TOML based specifications.
 License: MIT
 Encoding: UTF-8
 LazyData: true
-Imports:
+Depends:
     restorepoint,
     stringi,
     RcppTOML,
