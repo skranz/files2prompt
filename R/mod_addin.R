@@ -87,10 +87,10 @@ review_modifications_addin <- function() {
   cat("Locating all modification targets...\n")
   located_mod_list <- lapply(seq_along(mod_list), function(i) {
     mod <- mod_list[[i]]
-    tryCatch({
+    tryCatch({mod <-
       mod_locate_target(mod, project_dir)
     }, error = function(e) {
-      stop("Failed to locate target for modification #", i, " (", mod$meta$file, "):\n", e$message, call. = FALSE)
+      warning("Failed to locate target for modification #", i, " (", mod$meta$file, "):\n", e$message, call. = FALSE)
     })
   })
   cat("All targets located successfully.\n")

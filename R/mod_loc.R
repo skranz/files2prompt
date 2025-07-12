@@ -80,6 +80,7 @@ locate_scope_function <- function(mod) {
   if (NROW(loc)==0) {
     stop("Function '", fun_name, "' not found in '", basename(target_file), "'.")
   }
+  loc = loc[1,]
 
   loc$end_line_fun
   if ("insert_after_fun" %in% names(meta)) {
@@ -115,7 +116,7 @@ locate_scope_lines <- function(mod) {
     if (is.null(loc)) stop("Could not find 'insert_after_lines' sequence in '", basename(target_file), "'.")
     insert_line <- loc$end + 1
   } else {
-    all_funs <- if (grepl("\\.R$", target_file, ignore.case = TRUE)) fp_get_all_function_locations(target_file) else list()
+    all_funs <- if (grepl("\\.R$", target_file, ignore.case = TRUE)) f2p_all_fun_locs(target_file) else NULL
     insert_line <- get_insertion_line(mod$meta, original_lines, all_funs)
   }
   list(start = insert_line, end = insert_line - 1)
@@ -128,17 +129,31 @@ get_insertion_line <- function(meta, lines, fun_locs) {
   if (isTRUE(meta$insert_top)) return(1)
   if (isTRUE(meta$insert_bottom)) return(length(lines) + 1)
 
+  fun_name <- meta$insert_after_fun %||% meta$insert_before_fun
+  if (is.null(fun_name)) {
+    # No function-based insertion, default to bottom of file
+    return(length(lines) + 1)
+  }
+
+  # If fun_locs is NULL (e.g. not an R file) or empty, we can't find the function.
+  if (is.null(fun_locs) || nrow(fun_locs) == 0) {
+    stop("Cannot locate functions for insertion because no functions were found in '", meta$file, "'.")
+  }
+
+  loc <- fun_locs[fun_locs$fun_name == fun_name, ]
+  if (nrow(loc) == 0) {
+    stop("Function '", fun_name, "' not found in '", meta$file, "' for insertion.")
+  }
+
   if (!is.null(meta$insert_after_fun)) {
-    loc <- fun_locs[[meta$insert_after_fun]]
-    if (is.null(loc)) stop("Function '", meta$insert_after_fun, "' not found for insertion.")
-    return(loc$end_line + 1)
+    return(loc$end_line_fun[1] + 1)
   }
   if (!is.null(meta$insert_before_fun)) {
-    loc <- fun_locs[[meta$insert_before_fun]]
-    if (is.null(loc)) stop("Function '", meta$insert_before_fun, "' not found for insertion.")
-    return(loc$start_line)
+    # Insert before the function's preceding comment block
+    return(loc$start_line_comment[1])
   }
-  # Default to bottom of the file if no other criteria match
+
+  # Fallback: default to bottom of the file if no other criteria match
   return(length(lines) + 1)
 }
 

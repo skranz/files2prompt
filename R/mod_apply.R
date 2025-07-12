@@ -74,6 +74,11 @@ modify_rstudio_doc <- function(file, start_line, end_line, text) {
     rstudioapi::document_position(start_line, 1),
     rstudioapi::document_position(end_line + 1, 1)
   )
+
+  # make sure that line break at end of insert
+  # is well included
+  if (!endsWith(text,"\n")) text = paste0(text, "\n")
+
   rstudioapi::modifyRange(location = range, text = text)
   rstudioapi::documentSave()
 }
