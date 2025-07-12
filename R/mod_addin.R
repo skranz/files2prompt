@@ -62,7 +62,6 @@ navigate_to_modification_target <- function(mod, project_dir = tryCatch(rstudioa
   invisible(NULL)
 }
 
-
 review_modifications_addin <- function() {
   if (!requireNamespace("shiny", quietly = TRUE) || !requireNamespace("miniUI", quietly = TRUE)) {
     stop("The 'shiny' and 'miniUI' packages are required for this addin.")
@@ -83,17 +82,21 @@ review_modifications_addin <- function() {
     return(invisible())
   }
 
-  # 1b. Locate all mods, stop on any error
+  # 1b. Locate all mods, now without stopping on failure
   cat("Locating all modification targets...\n")
-  located_mod_list <- lapply(seq_along(mod_list), function(i) {
-    mod <- mod_list[[i]]
-    tryCatch({mod <-
-      mod_locate_target(mod, project_dir)
-    }, error = function(e) {
-      warning("Failed to locate target for modification #", i, " (", mod$meta$file, "):\n", e$message, call. = FALSE)
-    })
+  located_mod_list <- lapply(mod_list, function(mod) {
+    # mod_locate_target now adds error info to the mod object instead of stopping
+    mod_locate_target(mod, project_dir)
   })
-  cat("All targets located successfully.\n")
+  # Report any location failures
+  location_failures <- Filter(function(m) !isTRUE(m$meta$location_found), located_mod_list)
+  if (length(location_failures) > 0) {
+      cat("\nWarning: Could not locate targets for", length(location_failures), "modification(s):\n")
+      for (mod in location_failures) {
+          cat(" - File:", mod$meta$file, "| Error:", mod$meta$location_error %||% "Unknown reason", "\n")
+      }
+  }
+  cat("Target location phase complete.\n")
 
 
   # --- 2. Define the Shiny Gadget UI ---
@@ -155,7 +158,10 @@ review_modifications_addin <- function() {
          rstudioapi::showDialog("Relocation Error", paste("Could not re-locate target for", mod$meta$file, ":\n", e$message))
          return()
       })
-      navigate_to_modification_target(rv$mods[[rv$current]])
+      # Only navigate if the location was actually found
+      if (isTRUE(rv$mods[[rv$current]]$meta$location_found)) {
+        navigate_to_modification_target(rv$mods[[rv$current]])
+      }
     }, ignoreInit = FALSE, ignoreNULL = TRUE) # Run on startup
 
     output$info_ui <- shiny::renderUI({
@@ -169,6 +175,15 @@ review_modifications_addin <- function() {
 
     observeEvent(input$apply, {
       mod <- rv$mods[[rv$current]]
+
+      # NEW: If location was not found, treat as a skip.
+      if (!isTRUE(mod$meta$location_found)) {
+        rv$log <- c(rv$log, paste("SKIPPED (location not found):", mod$meta$scope, "on", mod$meta$file))
+        rv$undo_state <- create_undo_state()
+        if (rv$current <= rv$total) rv$current <- rv$current + 1
+        return()
+      }
+
       rv$undo_state <- prepare_undo_state(rv$current, mod$meta$file_path, mod$meta$start_line, mod$meta$end_line)
       tryCatch({
         apply_modification_via_api(mod)
@@ -222,7 +237,6 @@ review_modifications_addin <- function() {
   cat("Starting modification review tool...\n")
   shiny::runGadget(ui, server, viewer = shiny::paneViewer(minHeight = "maximize"))
 }
-
 mod_meta_add_info = function(meta) {
   if (any(startsWith(names(meta), "insert"))) {
     meta$is_insert = TRUE
@@ -235,16 +249,43 @@ mod_meta_add_info = function(meta) {
 mod_to_html_descr = function(mod) {
   restore.point("mod_to_html_descr")
   meta = mod_meta_add_info(mod$meta)
-  str = ""
-  if (meta$scope=="function" & meta$is_insert) {
-    str = paste0("Add function to <i>", meta$file,"</i>")
-  } else if (meta$scope=="function" & !meta$is_insert) {
-    str = paste0("Replace function ", meta[["function_name"]], " in ", meta$file)
-  } else if (meta$scope=="file") {
-    str = paste0("Write complete ", meta$file)
-  } else if (meta$scope=="lines") {
-    str = paste0("Write lines in ", meta$file)
+
+  location_status_html <- ""
+  if (!isTRUE(meta$location_found)) {
+    err_msg <- meta$location_error %||% "Target location for modification could not be determined."
+    location_status_html <- paste0(
+      "<p style='color:red; font-weight:bold;'>Location not found: ",
+      htmltools::htmlEscape(err_msg),
+      "</p>",
+      "<p><i>This change will be skipped if you click 'Apply'.</i></p>"
+    )
+  } else if (isTRUE(meta$location_is_fuzzy)) {
+    location_status_html <- paste0(
+      "<p style='color:orange; font-weight:bold;'>Note: The target location is an approximate match.",
+      " Please review the highlighted code in the editor carefully before applying.</p>"
+    )
   }
-  str = paste0("<p>", str, ": ", meta$descr, "\n<pre>", htmltools::htmlEscape(mod$payload), "\n</pre>")
-  str
+
+  descr_str <- ""
+  if (meta$scope=="function" && meta$is_insert) {
+    descr_str <- paste0("Add function to <i>", htmltools::htmlEscape(meta$file),"</i>")
+  } else if (meta$scope=="function" && !meta$is_insert) {
+    descr_str <- paste0("Replace function <code>", htmltools::htmlEscape(meta[["function_name"]]), "</code> in <i>", htmltools::htmlEscape(meta$file), "</i>")
+  } else if (meta$scope=="file") {
+    descr_str <- paste0("Write complete file <i>", htmltools::htmlEscape(meta$file), "</i>")
+  } else if (meta$scope=="lines") {
+    descr_str <- paste0("Modify lines in <i>", htmltools::htmlEscape(meta$file), "</i>")
+  }
+
+  description_html <- paste0(
+    "<h5>", descr_str, "</h5>",
+    "<p><b>Description:</b> ", htmltools::htmlEscape(meta$descr), "</p>"
+  )
+
+  payload_html <- paste0(
+    "<h5>Proposed Change:</h5>",
+    "<pre>", htmltools::htmlEscape(mod$payload), "</pre>"
+  )
+
+  paste0(location_status_html, description_html, payload_html)
 }
