@@ -15,6 +15,11 @@ apply_modification_via_api <- function(mod) {
   # Create directory if it doesn't exist (for new files)
   dir.create(dirname(mod$meta$file_path), showWarnings = FALSE, recursive = TRUE)
 
+  # If the file itself doesn't exist, create it before navigating/modifying.
+  if (!file.exists(mod$meta$file_path)) {
+    file.create(mod$meta$file_path)
+  }
+
   # The generic rstudio document modifier
   modify_rstudio_doc(
     file = mod$meta$file_path,
@@ -70,4 +75,6 @@ modify_rstudio_doc <- function(file, start_line, end_line, text) {
     rstudioapi::document_position(end_line + 1, 1)
   )
   rstudioapi::modifyRange(location = range, text = text)
+  rstudioapi::documentSave()
 }
+

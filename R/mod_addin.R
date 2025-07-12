@@ -13,19 +13,27 @@
 #' @param mod A single parsed and *located* modification object. It must
 #'   contain `mod$meta$file_path`, `start_line`, and `end_line`.
 #' @keywords internal
-navigate_to_modification_target <- function(mod) {
+navigate_to_modification_target <- function(mod, project_dir = tryCatch(rstudioapi::getActiveProject(), error = function(e) getwd())) {
   if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
     return(invisible(NULL))
   }
   restore.point("navigate_to_modification_target")
+  #mod = mod_locate_target(mod, project_dir)
+
   tryCatch({
     target_file <- mod$meta$file_path
     start_line <- mod$meta$start_line
     end_line <- mod$meta$end_line
 
-    if (is.null(target_file) || !file.exists(target_file)) {
-      # For a new file, we can't navigate yet. Just do nothing.
+    if (is.null(target_file)) {
       return(invisible(NULL))
+    }
+
+    # If the file doesn't exist, it must be a new file modification.
+    # We create it here so the user sees it appear and we can navigate to it.
+    if (!file.exists(target_file)) {
+      dir.create(dirname(target_file), showWarnings = FALSE, recursive = TRUE)
+      file.create(target_file)
     }
 
     rstudioapi::navigateToFile(target_file)

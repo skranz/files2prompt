@@ -1,7 +1,7 @@
 #' @keywords internal
 generate_prompt_addin <- function() {
-  restore.point("addin_find_config_toml")
   library(files2prompt)
+  restore.point("generate_prompt_addin")
   if (!requireNamespace("rstudioapi", quietly = TRUE)) {
     stop("The add-in requires the {rstudioapi} package.")
   }
@@ -96,6 +96,7 @@ generate_prompt_addin <- function() {
 }
 
 addin_find_config_toml <- function() {
+  library(files2prompt)
   restore.point("addin_find_config_toml")
   is_toml <- function(path) length(path) == 1L &&
                              is.character(path)  &&

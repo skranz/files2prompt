@@ -47,7 +47,6 @@ Below are relevant files from my R project.
 
 {{README}}
 
-
 {{task}}
 '''
 
@@ -58,6 +57,8 @@ task = '''
 #######################################################
 
 Please describe the code base and propose improvements.
+
+If you propose code changes also follow the format described in mod_instruct.md
 
 '''
 

@@ -70,6 +70,7 @@ locate_scope_function <- function(mod) {
   if ("insert_top" %in% names(meta)) {
     return(list(start = 1, end = 0)) # end < start
   } else if ("insert_bottom" %in% names(meta)) {
+
     return(list(start = NROW(original_lines)+1, end = NROW(original_lines))) # end < start
   }
 
@@ -82,11 +83,11 @@ locate_scope_function <- function(mod) {
 
   loc$end_line_fun
   if ("insert_after_fun" %in% names(meta)) {
-    return(list(list(start = loc$end_line_fun, end = loc$end_line_fun - 1)))
+    return(list(start = loc$end_line_fun+1, end = loc$end_line_fun))
   } else if ("insert_before_fun" %in% names(meta)) {
-    return(list(list(start = loc$start_line_comment, end = loc$start_line_comment - 1)))
+    return(list(start = loc$start_line_comment, end = loc$start_line_comment - 1))
   } else {
-    return(list(list(start = loc$start_line_comment, end = loc$end_line_fun)))
+    return(list(start = loc$start_line_comment, end = loc$end_line_fun))
   }
 
 
