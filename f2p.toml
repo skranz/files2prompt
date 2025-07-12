@@ -58,7 +58,7 @@ task = '''
 
 Please describe the code base and propose improvements.
 
-If you propose code changes also follow the format described in mod_instruct.md but only use file scope or function scope modifications.
+If you propose code changes also follow the format described in mod_instruct.md but only use file scope or function scope modifications. Function scope only for a single created / modified function in an R file. Otherwise file scope.
 
 '''
 
