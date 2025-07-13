@@ -112,13 +112,14 @@ review_modifications_addin <- function() {
         shiny::conditionalPanel(
           condition = "output.mods_in_progress == true",
           shiny::actionButton("apply", "Apply",  class = "btn-xs btn-primary"),
+          shiny::actionButton("insert_here", "Insert Here", class = "btn-xs btn-info"),
           shiny::actionButton("skip", "Skip",  class = "btn-xs"),
           shiny::actionButton("back", "Back", class = "btn-xs"),
-          shiny::actionButton("undo", "Undo", class = "btn-xs"),
           shiny::actionButton("abort", "Cancel", class = "btn-xs")
         ),
         shiny::conditionalPanel(
           condition = "output.mods_in_progress == false",
+          shiny::actionButton("back_from_finish", "Back", class = "btn-xs"),
           shiny::actionButton("finish", "Finish", class = "btn-primary")
         )
       ),
@@ -141,8 +142,7 @@ review_modifications_addin <- function() {
       mods = located_mod_list,
       current = 1,
       total = length(located_mod_list),
-      log = character(0),
-      undo_state = create_undo_state()
+      log = character(0)
     )
 
     output$mods_in_progress <- shiny::reactive({ rv$current <= rv$total })
@@ -176,59 +176,76 @@ review_modifications_addin <- function() {
     observeEvent(input$apply, {
       mod <- rv$mods[[rv$current]]
 
-      # NEW: If location was not found, treat as a skip.
+      # If location was not found, treat as a skip.
       if (!isTRUE(mod$meta$location_found)) {
-        rv$log <- c(rv$log, paste("SKIPPED (location not found):", mod$meta$scope, "on", mod$meta$file))
-        rv$undo_state <- create_undo_state()
+        rv$log <- c(rv$log, paste0("SKIPPED (location not found): Change ", rv$current, " (", mod$meta$scope, ") on '", mod$meta$file, "'."))
         if (rv$current <= rv$total) rv$current <- rv$current + 1
         return()
       }
 
-      rv$undo_state <- prepare_undo_state(rv$current, mod$meta$file_path, mod$meta$start_line, mod$meta$end_line)
       tryCatch({
         apply_modification_via_api(mod)
-        rv$log <- c(rv$log, paste("APPLIED:", mod$meta$scope, "on", mod$meta$file))
+        meta <- mod$meta
+        location_desc <- if(meta$end_line < meta$start_line) {
+            paste("insertion at line", meta$start_line)
+        } else {
+            paste("replacement at lines", meta$start_line, "to", meta$end_line)
+        }
+
+        scope_desc <- if (meta$scope == "function") {
+          fun_name <- meta$function_name %||% meta$insert_after_fun %||% meta$insert_before_fun %||% "(unnamed)"
+          paste0("function '", fun_name, "'")
+        } else {
+          meta$scope
+        }
+
+        log_msg <- paste0("APPLIED: Change ", rv$current, " (", scope_desc, ") in '", meta$file, "' (", location_desc, ").")
+        rv$log <- c(rv$log, log_msg)
+
         Sys.sleep(0.5)
         if (rv$current <= rv$total) rv$current <- rv$current + 1
       }, error = function(e) {
-        msg <- paste("ERROR applying to", mod$meta$file, ":", e$message)
+        msg <- paste("ERROR applying Change", rv$current, "to", mod$meta$file, ":", e$message)
         rv$log <- c(rv$log, msg)
         rstudioapi::showDialog("Error Applying Change", e$message)
-        rv$undo_state <- create_undo_state() # Clear undo state on error
       })
     })
 
+    observeEvent(input$insert_here, {
+      mod <- rv$mods[[rv$current]]
+      payload <- mod$payload
+      ctx <- tryCatch(rstudioapi::getSourceEditorContext(), error = function(e) NULL)
+
+      if (is.null(ctx) || is.null(ctx$id) || !nzchar(ctx$path)) {
+        msg <- "Could not get RStudio editor context. Please make sure a file is open and active."
+        rstudioapi::showDialog("Error", msg)
+        rv$log <- c(rv$log, paste("INSERT FAILED (no context): Change", rv$current))
+        return()
+      }
+      # insertText uses the current selection(s) to insert or replace
+      rstudioapi::insertText(text = payload, id = ctx$id)
+      rstudioapi::documentSave(id = ctx$id)
+
+      log_msg <- paste0("INSERTED (manually): Change ", rv$current, " at cursor in '", basename(ctx$path), "'.")
+      rv$log <- c(rv$log, log_msg)
+      # Do not advance current. User should inspect and then click skip.
+    })
+
+
     observeEvent(input$skip, {
       mod <- rv$mods[[rv$current]]
-      rv$log <- c(rv$log, paste("SKIPPED:", mod$meta$scope, "on", mod$meta$file))
-      rv$undo_state <- create_undo_state()
+      rv$log <- c(rv$log, paste0("SKIPPED: Change ", rv$current, " (", mod$meta$scope, ") on '", mod$meta$file, "'."))
       if (rv$current <= rv$total) rv$current <- rv$current + 1
     })
 
     observeEvent(input$back, {
-      rv$undo_state <- create_undo_state()
       if (rv$current > 1) rv$current <- rv$current - 1
     })
 
-    observeEvent(input$undo, {
-      req(!is.null(rv$undo_state$mod_index))
-      undo <- rv$undo_state
-      mod_that_was_applied <- rv$mods[[undo$mod_index]]
-
-      num_payload_lines <- length(gregexpr("\n", mod_that_was_applied$payload)[[1]]) + 1
-      if (mod_that_was_applied$payload == "") num_payload_lines <- 0
-
-      undo_replace_end_line <- undo$start_line + num_payload_lines - 1
-
-      tryCatch({
-        apply_restoration_via_api(undo$file_path, undo$start_line, undo_replace_end_line, undo$original_content)
-        rv$log <- c(rv$log, paste("UNDONE: Change", undo$mod_index, "on", basename(undo$file_path)))
-        rv$current <- undo$mod_index
-        rv$undo_state <- create_undo_state()
-      }, error = function(e) {
-        rstudioapi::showDialog("Error Undoing Change", e$message)
-      })
+    observeEvent(input$back_from_finish, {
+      if (rv$total > 0) rv$current <- rv$total
     })
+
 
     observeEvent(input$abort, { shiny::stopApp(invisible(rv$log)) })
     observeEvent(input$finish, { shiny::stopApp(invisible(rv$log)) })
@@ -257,7 +274,7 @@ mod_to_html_descr = function(mod) {
       "<p style='color:red; font-weight:bold;'>Location not found: ",
       htmltools::htmlEscape(err_msg),
       "</p>",
-      "<p><i>This change will be skipped if you click 'Apply'.</i></p>"
+      "<p><i>This change will be skipped if you click 'Apply'. You can use 'Insert Here' to apply it manually at the cursor.</i></p>"
     )
   } else if (isTRUE(meta$location_is_fuzzy)) {
     location_status_html <- paste0(

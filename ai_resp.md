@@ -1,151 +1,324 @@
-Of course. I can help make the package more robust by adding the requested features. The proposed changes will improve how AI responses are parsed and applied.
+Of course, I can help you with those changes to the "Apply Modifications" addin. Removing the untested "Undo" feature in favor of a more robust manual insertion option is a great idea. The improved logging will also make the tool's actions clearer.
 
-Here are the planned modifications to implement the two features:
-1.  **Smarter Function Replacement**: I will modify `locate_scope_function` in `mod_loc.R`. The function will now check if the replacement code for a function includes roxygen comments (`#'...`). If it doesn't, the original roxygen comments of the function will be preserved, and only the function's body will be replaced. This prevents accidental deletion of documentation.
-2.  **AI Response Normalization**: I will create a new helper function `f2p_normalize_ai_response` and add it to `mod_parser.R`. This function will clean up the AI's response text by ensuring that markdown code fences (```) always start on a new line. The main `parse_ai_response` function will be updated to use this normalizer before parsing, making the process more resilient to minor formatting inconsistencies from the LLM.
 
-Below are the detailed changes in the required format.
-
-!MODIFICATION mod_parser.R
+!MODIFICATION mod_addin.R
 scope = "file"
-file = "mod_parser.R"
+file = "mod_addin.R"
 is_new_file = false
-description = '''Add a normalization function `f2p_normalize_ai_response` to fix malformed markdown fences in AI responses and call it from `parse_ai_response` before parsing.'''
+description = '''Overhaul the 'Apply Modifications' addin:
+- Remove the 'Undo' button and all associated logic.
+- Add a new 'Insert Here' button to manually apply a change at the current cursor position, which is useful when automatic location fails.
+- Add a 'Back' button to the finish screen to allow returning to the review.
+- Improve log messages to be more specific about what was changed and where.'''
 ---
 ```r
-#' Normalize AI response text to fix common formatting errors.
+# FILE: R/mod_addin.R
+#' @importFrom shiny fluidPage verbatimTextOutput actionButton observeEvent
+#' @importFrom shiny reactiveValues renderPrint shinyApp stopApp isolate runGadget
+#' @importFrom shiny uiOutput renderUI tagList h4 tags conditionalPanel reactive outputOptions req
+#' @importFrom miniUI miniPage gadgetTitleBar miniContentPanel miniTitleBarButton
+#' @keywords internal
+
+#' Navigate to a modification target in RStudio and select/highlight
 #'
-#' @param text The raw text from the AI response.
-#' @return The normalized text.
+#' This function takes a *located* modification object and uses `rstudioapi`
+#' to navigate to the file and select the relevant code range.
+#'
+#' @param mod A single parsed and *located* modification object. It must
+#'   contain `mod$meta$file_path`, `start_line`, and `end_line`.
 #' @keywords internal
-f2p_normalize_ai_response <- function(text) {
-  # Add a newline before a markdown fence '```' if it's not at the start of a line.
-  # This handles cases where the AI might write "description...```r" on one line.
-  text <- gsub("([^\n])```", "\\1\n```", text, perl = TRUE)
-  return(text)
-}
-
-#' @importFrom RcppTOML parseTOML
-#' @importFrom stringi stri_split_fixed stri_trim_both stri_match_all_regex
-#' @keywords internal
-parse_ai_response <- function(text) {
-  restore.point("parse_ai_response")
-  # First, normalize the response to fix common formatting issues
-  text <- f2p_normalize_ai_response(text)
-
-  # Use regex to find all blocks between !MODIFICATION and !END_MODIFICATION
-  pattern <- "(?s)!MODIFICATION.*?\\n(.*?)\\n!END_MODIFICATION"
-  matches <- stri_match_all_regex(text, pattern)[[1]]
-
-  if (nrow(matches) == 0) {
-    return(list())
+navigate_to_modification_target <- function(mod, project_dir = tryCatch(rstudioapi::getActiveProject(), error = function(e) getwd())) {
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+    return(invisible(NULL))
   }
+  restore.point("navigate_to_modification_target")
+  #mod = mod_locate_target(mod, project_dir)
 
-  blocks <- matches[, 2] # Extract the captured group
+  tryCatch({
+    target_file <- mod$meta$file_path
+    start_line <- mod$meta$start_line
+    end_line <- mod$meta$end_line
 
-  parsed_mods <- list()
-  for (i in seq_along(blocks)) {
-    block <- blocks[i]
-    parts <- stri_split_fixed(block, "\n---\n", n = 2)[[1]]
-
-    if (length(parts) != 2) {
-      stop("Modification block ", i, " is malformed (missing '---' separator).")
+    if (is.null(target_file)) {
+      return(invisible(NULL))
     }
 
-    meta_str <- parts[1]
-    payload_str <- parts[2]
+    # If the file doesn't exist, it must be a new file modification.
+    # We create it here so the user sees it appear and we can navigate to it.
+    if (!file.exists(target_file)) {
+      dir.create(dirname(target_file), showWarnings = FALSE, recursive = TRUE)
+      file.create(target_file)
+    }
 
-    meta <- tryCatch({
-      RcppTOML::parseTOML(meta_str, fromFile = FALSE)
-    }, error = function(e) {
-      stop("Failed to parse TOML in modification block ", i, ": ", e$message)
+    rstudioapi::navigateToFile(target_file)
+
+    # For an insertion, end_line < start_line. We just set the cursor.
+    if (end_line < start_line) {
+      rstudioapi::setCursorPosition(rstudioapi::document_position(start_line, 1))
+    } else {
+      # For replacement, select the range.
+      original_lines <- readLines(target_file, warn = FALSE)
+      end_col <- if (end_line <= length(original_lines)) {
+        nchar(original_lines[end_line]) + 1
+      } else {
+        1
+      }
+      rng <- rstudioapi::document_range(
+               rstudioapi::document_position(start_line, 1),
+               rstudioapi::document_position(end_line, end_col)
+             )
+      rstudioapi::setSelectionRanges(list(rng))
+    }
+  }, error = function(e) {
+    message("Info: Could not navigate/highlight target for '", mod$meta$file, "'. ", e$message)
+  })
+
+  invisible(NULL)
+}
+
+review_modifications_addin <- function() {
+  if (!requireNamespace("shiny", quietly = TRUE) || !requireNamespace("miniUI", quietly = TRUE)) {
+    stop("The 'shiny' and 'miniUI' packages are required for this addin.")
+  }
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+      stop("This addin requires RStudio version 1.2 or higher.")
+  }
+  library(files2prompt)
+  # --- 1. PRE-PROCESSING (before UI) ---
+  project_dir <- tryCatch(rstudioapi::getActiveProject(), error = function(e) getwd())
+  response_file <- find_ai_response_file()
+  raw_text <- paste(readLines(response_file, warn = FALSE), collapse = "\n")
+
+  # 1a. Parse all mods, stop on any error
+  mod_list <- parse_ai_response(raw_text)
+  if (length(mod_list) == 0) {
+    message("No valid modifications found in '", basename(response_file), "'.")
+    return(invisible())
+  }
+
+  # 1b. Locate all mods, now without stopping on failure
+  cat("Locating all modification targets...\n")
+  located_mod_list <- lapply(mod_list, function(mod) {
+    # mod_locate_target now adds error info to the mod object instead of stopping
+    mod_locate_target(mod, project_dir)
+  })
+  # Report any location failures
+  location_failures <- Filter(function(m) !isTRUE(m$meta$location_found), located_mod_list)
+  if (length(location_failures) > 0) {
+      cat("\nWarning: Could not locate targets for", length(location_failures), "modification(s):\n")
+      for (mod in location_failures) {
+          cat(" - File:", mod$meta$file, "| Error:", mod$meta$location_error %||% "Unknown reason", "\n")
+      }
+  }
+  cat("Target location phase complete.\n")
+
+
+  # --- 2. Define the Shiny Gadget UI ---
+  ui <- miniUI::miniPage(
+    shiny::tags$head(shiny::tags$style(shiny::HTML("
+      #info_ui p { white-space: pre-wrap; word-wrap: break-word; margin-bottom: 5px; }
+      .btn-container { margin-top: 2px; }
+      .btn-container .btn { margin-right: 5px; }
+    "))),
+
+    miniUI::miniContentPanel(
+      shiny::div(class = "btn-container",
+        shiny::conditionalPanel(
+          condition = "output.mods_in_progress == true",
+          shiny::actionButton("apply", "Apply",  class = "btn-xs btn-primary"),
+          shiny::actionButton("insert_here", "Insert Here", class = "btn-xs btn-info"),
+          shiny::actionButton("skip", "Skip",  class = "btn-xs"),
+          shiny::actionButton("back", "Back", class = "btn-xs"),
+          shiny::actionButton("abort", "Cancel", class = "btn-xs")
+        ),
+        shiny::conditionalPanel(
+          condition = "output.mods_in_progress == false",
+          shiny::actionButton("back_from_finish", "Back", class = "btn-xs"),
+          shiny::actionButton("finish", "Finish", class = "btn-primary")
+        )
+      ),
+      shiny::conditionalPanel(
+        condition = "output.mods_in_progress == true",
+        shiny::uiOutput("info_ui")
+      ),
+      shiny::conditionalPanel(
+        condition = "output.mods_in_progress == false",
+        shiny::h4("All modifications processed."),
+        shiny::h5("Log of actions:"),
+        shiny::verbatimTextOutput("final_log")
+      )
+    )
+  )
+
+  # --- 3. Define the Shiny Server Logic ---
+  server <- function(input, output, session) {
+    rv <- shiny::reactiveValues(
+      mods = located_mod_list,
+      current = 1,
+      total = length(located_mod_list),
+      log = character(0)
+    )
+
+    output$mods_in_progress <- shiny::reactive({ rv$current <= rv$total })
+    shiny::outputOptions(output, "mods_in_progress", suspendWhenHidden = FALSE)
+
+    observeEvent(rv$current, {
+      req(rv$current >= 1, rv$current <= rv$total)
+      mod <- rv$mods[[rv$current]]
+      # RELOCATE target, as previous edits might have changed line numbers
+      tryCatch({
+        rv$mods[[rv$current]] <- mod_locate_target(mod, project_dir)
+      }, error = function(e) {
+         rstudioapi::showDialog("Relocation Error", paste("Could not re-locate target for", mod$meta$file, ":\n", e$message))
+         return()
+      })
+      # Only navigate if the location was actually found
+      if (isTRUE(rv$mods[[rv$current]]$meta$location_found)) {
+        navigate_to_modification_target(rv$mods[[rv$current]])
+      }
+    }, ignoreInit = FALSE, ignoreNULL = TRUE) # Run on startup
+
+    output$info_ui <- shiny::renderUI({
+      req(rv$current <= rv$total)
+      mod <- rv$mods[[rv$current]]
+      shiny::HTML(paste0("<h4>Modification ", rv$current, " of ", rv$total, "</h4>", mod_to_html_descr(mod)))
     })
 
-    if (is.null(meta$scope) || is.null(meta$file)) {
-      stop("Modification block ", i, " is missing required metadata (scope, file).")
-    }
 
-    # Extract code from the markdown fence
-    payload_match <- regexpr("(?s)^```[a-zA-Z]*\\n(.*?)\\n```\\s*$", payload_str, perl = TRUE)
-    if (payload_match != -1) {
-      start <- attr(payload_match, "capture.start")[1]
-      len <- attr(payload_match, "capture.length")[1]
-      payload <- substr(payload_str, start, start + len - 1)
-    } else if (stri_trim_both(payload_str) == "```\n```") {
-      # Handle empty code block
-      payload <- ""
-    } else {
-      # If no markdown fence, assume the whole payload is the code
-      payload <- payload_str
-      warning("Payload in block ", i, " was not wrapped in a markdown code fence. Using entire block as payload.")
-    }
+    output$final_log <- shiny::renderPrint({ cat(paste(rv$log, collapse="\n")) })
 
-    parsed_mods[[i]] <- list(meta = meta, payload = payload)
+    observeEvent(input$apply, {
+      mod <- rv$mods[[rv$current]]
+
+      # If location was not found, treat as a skip.
+      if (!isTRUE(mod$meta$location_found)) {
+        rv$log <- c(rv$log, paste0("SKIPPED (location not found): Change ", rv$current, " (", mod$meta$scope, ") on '", mod$meta$file, "'."))
+        if (rv$current <= rv$total) rv$current <- rv$current + 1
+        return()
+      }
+
+      tryCatch({
+        apply_modification_via_api(mod)
+        meta <- mod$meta
+        location_desc <- if(meta$end_line < meta$start_line) {
+            paste("insertion at line", meta$start_line)
+        } else {
+            paste("replacement at lines", meta$start_line, "to", meta$end_line)
+        }
+
+        scope_desc <- if (meta$scope == "function") {
+          fun_name <- meta$function_name %||% meta$insert_after_fun %||% meta$insert_before_fun %||% "(unnamed)"
+          paste0("function '", fun_name, "'")
+        } else {
+          meta$scope
+        }
+
+        log_msg <- paste0("APPLIED: Change ", rv$current, " (", scope_desc, ") in '", meta$file, "' (", location_desc, ").")
+        rv$log <- c(rv$log, log_msg)
+
+        Sys.sleep(0.5)
+        if (rv$current <= rv$total) rv$current <- rv$current + 1
+      }, error = function(e) {
+        msg <- paste("ERROR applying Change", rv$current, "to", mod$meta$file, ":", e$message)
+        rv$log <- c(rv$log, msg)
+        rstudioapi::showDialog("Error Applying Change", e$message)
+      })
+    })
+
+    observeEvent(input$insert_here, {
+      mod <- rv$mods[[rv$current]]
+      payload <- mod$payload
+      ctx <- tryCatch(rstudioapi::getSourceEditorContext(), error = function(e) NULL)
+
+      if (is.null(ctx) || is.null(ctx$id) || !nzchar(ctx$path)) {
+        msg <- "Could not get RStudio editor context. Please make sure a file is open and active."
+        rstudioapi::showDialog("Error", msg)
+        rv$log <- c(rv$log, paste("INSERT FAILED (no context): Change", rv$current))
+        return()
+      }
+      # insertText uses the current selection(s) to insert or replace
+      rstudioapi::insertText(text = payload, id = ctx$id)
+      rstudioapi::documentSave(id = ctx$id)
+
+      log_msg <- paste0("INSERTED (manually): Change ", rv$current, " at cursor in '", basename(ctx$path), "'.")
+      rv$log <- c(rv$log, log_msg)
+      # Do not advance current. User should inspect and then click skip.
+    })
+
+
+    observeEvent(input$skip, {
+      mod <- rv$mods[[rv$current]]
+      rv$log <- c(rv$log, paste0("SKIPPED: Change ", rv$current, " (", mod$meta$scope, ") on '", mod$meta$file, "'."))
+      if (rv$current <= rv$total) rv$current <- rv$current + 1
+    })
+
+    observeEvent(input$back, {
+      if (rv$current > 1) rv$current <- rv$current - 1
+    })
+
+    observeEvent(input$back_from_finish, {
+      if (rv$total > 0) rv$current <- rv$total
+    })
+
+
+    observeEvent(input$abort, { shiny::stopApp(invisible(rv$log)) })
+    observeEvent(input$finish, { shiny::stopApp(invisible(rv$log)) })
   }
 
-  return(parsed_mods)
+  cat("Starting modification review tool...\n")
+  shiny::runGadget(ui, server, viewer = shiny::paneViewer(minHeight = "maximize"))
 }
-```
-!END_MODIFICATION mod_parser.R
-
-!MODIFICATION locate_scope_function in mod_loc.R
-scope = "function"
-file = "mod_loc.R"
-function_name = "locate_scope_function"
-description = '''Update `locate_scope_function` to preserve existing roxygen comments when a function is replaced with a payload that does not contain new roxygen comments.'''
----
-```r
-locate_scope_function <- function(mod) {
-  restore.point("locate_scope_function")
-  target_file <- mod$meta$file_path
-  if (!file.exists(target_file)) {
-    # This case is for new files, handled by file scope or insert_top/bottom
-    # for an existing file that's now missing.
-    return(list(start = 1, end = 0, found = FALSE, is_fuzzy = FALSE,
-                error_msg = paste0("File '", basename(target_file), "' does not exist.")))
-  }
-  original_lines <- readLines(target_file, warn = FALSE)
-  all_funs <- f2p_all_fun_locs(target_file)
-  meta = mod$meta
-
-  if ("insert_top" %in% names(meta)) {
-    return(list(start = 1, end = 0, found = TRUE, is_fuzzy = FALSE))
-  } else if ("insert_bottom" %in% names(meta)) {
-    return(list(start = NROW(original_lines)+1, end = NROW(original_lines), found = TRUE, is_fuzzy = FALSE))
-  }
-
-  fun_name = meta$function_name %||% meta$insert_after_fun %||% meta$insert_before_fun
-  if (is.null(fun_name)) {
-      return(list(start = 1, end = 0, found = FALSE, is_fuzzy = FALSE,
-                  error_msg = "No function name specified for replacement or relative insertion."))
-  }
-
-  loc <- all_funs[all_funs$fun_name==fun_name,]
-  if (NROW(loc)==0) {
-    return(list(start = 1, end = 0, found = FALSE, is_fuzzy = FALSE,
-                error_msg = paste0("Function '", fun_name, "' not found in '", basename(target_file), "'.")))
-  }
-  loc = loc[1,]
-
-  if ("insert_after_fun" %in% names(meta)) {
-    return(list(start = loc$end_line_fun + 1, end = loc$end_line_fun, found = TRUE, is_fuzzy = FALSE))
-  } else if ("insert_before_fun" %in% names(meta)) {
-    return(list(start = loc$start_line_comment, end = loc$start_line_comment - 1, found = TRUE, is_fuzzy = FALSE))
+mod_meta_add_info = function(meta) {
+  if (any(startsWith(names(meta), "insert"))) {
+    meta$is_insert = TRUE
   } else {
-    # It's a function replacement. Check if the new payload has roxygen comments.
-    # If not, we preserve the old comments.
-    has_roxygen_comments <- any(grepl("^\\s*#'", strsplit(mod$payload, "\n")[[1]]))
-
-    start_replace_line <- if (has_roxygen_comments) {
-      # Payload has comments, so replace the old ones too.
-      loc$start_line_comment
-    } else {
-      # Payload has no comments, preserve the old ones by starting replacement
-      # at the function definition line.
-      loc$start_line_fun
-    }
-    return(list(start = start_replace_line, end = loc$end_line_fun, found = TRUE, is_fuzzy = FALSE))
+    meta$is_insert = FALSE
   }
+  meta
+}
+
+mod_to_html_descr = function(mod) {
+  restore.point("mod_to_html_descr")
+  meta = mod_meta_add_info(mod$meta)
+
+  location_status_html <- ""
+  if (!isTRUE(meta$location_found)) {
+    err_msg <- meta$location_error %||% "Target location for modification could not be determined."
+    location_status_html <- paste0(
+      "<p style='color:red; font-weight:bold;'>Location not found: ",
+      htmltools::htmlEscape(err_msg),
+      "</p>",
+      "<p><i>This change will be skipped if you click 'Apply'. You can use 'Insert Here' to apply it manually at the cursor.</i></p>"
+    )
+  } else if (isTRUE(meta$location_is_fuzzy)) {
+    location_status_html <- paste0(
+      "<p style='color:orange; font-weight:bold;'>Note: The target location is an approximate match.",
+      " Please review the highlighted code in the editor carefully before applying.</p>"
+    )
+  }
+
+  descr_str <- ""
+  if (meta$scope=="function" && meta$is_insert) {
+    descr_str <- paste0("Add function to <i>", htmltools::htmlEscape(meta$file),"</i>")
+  } else if (meta$scope=="function" && !meta$is_insert) {
+    descr_str <- paste0("Replace function <code>", htmltools::htmlEscape(meta[["function_name"]]), "</code> in <i>", htmltools::htmlEscape(meta$file), "</i>")
+  } else if (meta$scope=="file") {
+    descr_str <- paste0("Write complete file <i>", htmltools::htmlEscape(meta$file), "</i>")
+  } else if (meta$scope=="lines") {
+    descr_str <- paste0("Modify lines in <i>", htmltools::htmlEscape(meta$file), "</i>")
+  }
+
+  description_html <- paste0(
+    "<h5>", descr_str, "</h5>",
+    "<p><b>Description:</b> ", htmltools::htmlEscape(meta$descr), "</p>"
+  )
+
+  payload_html <- paste0(
+    "<h5>Proposed Change:</h5>",
+    "<pre>", htmltools::htmlEscape(mod$payload), "</pre>"
+  )
+
+  paste0(location_status_html, description_html, payload_html)
 }
 ```
-!END_MODIFICATION locate_scope_function in mod_loc.R
+!END_MODIFICATION mod_addin.R
