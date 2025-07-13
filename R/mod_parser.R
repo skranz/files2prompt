@@ -1,8 +1,23 @@
+#' Normalize AI response text to fix common formatting errors.
+#'
+#' @param text The raw text from the AI response.
+#' @return The normalized text.
+#' @keywords internal
+f2p_normalize_ai_response <- function(text) {
+  # Add a newline before a markdown fence '```' if it's not at the start of a line.
+  # This handles cases where the AI might write "description...```r" on one line.
+  text <- gsub("([^\n])```", "\\1\n```", text, perl = TRUE)
+  return(text)
+}
+
 #' @importFrom RcppTOML parseTOML
 #' @importFrom stringi stri_split_fixed stri_trim_both stri_match_all_regex
 #' @keywords internal
 parse_ai_response <- function(text) {
   restore.point("parse_ai_response")
+  # First, normalize the response to fix common formatting issues
+  text <- f2p_normalize_ai_response(text)
+
   # Use regex to find all blocks between !MODIFICATION and !END_MODIFICATION
   pattern <- "(?s)!MODIFICATION.*?\\n(.*?)\\n!END_MODIFICATION"
   matches <- stri_match_all_regex(text, pattern)[[1]]
@@ -55,4 +70,3 @@ parse_ai_response <- function(text) {
 
   return(parsed_mods)
 }
-

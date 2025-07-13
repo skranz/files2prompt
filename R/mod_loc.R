@@ -109,7 +109,19 @@ locate_scope_function <- function(mod) {
   } else if ("insert_before_fun" %in% names(meta)) {
     return(list(start = loc$start_line_comment, end = loc$start_line_comment - 1, found = TRUE, is_fuzzy = FALSE))
   } else {
-    return(list(start = loc$start_line_comment, end = loc$end_line_fun, found = TRUE, is_fuzzy = FALSE))
+    # It's a function replacement. Check if the new payload has roxygen comments.
+    # If not, we preserve the old comments.
+    has_roxygen_comments <- any(grepl("^\\s*#'", strsplit(mod$payload, "\n")[[1]]))
+
+    start_replace_line <- if (has_roxygen_comments) {
+      # Payload has comments, so replace the old ones too.
+      loc$start_line_comment
+    } else {
+      # Payload has no comments, preserve the old ones by starting replacement
+      # at the function definition line.
+      loc$start_line_fun
+    }
+    return(list(start = start_replace_line, end = loc$end_line_fun, found = TRUE, is_fuzzy = FALSE))
   }
 }
 
