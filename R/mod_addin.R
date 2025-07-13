@@ -112,9 +112,9 @@ review_modifications_addin <- function() {
         shiny::conditionalPanel(
           condition = "output.mods_in_progress == true",
           shiny::actionButton("apply", "Apply",  class = "btn-xs btn-primary"),
-          shiny::actionButton("insert_here", "Insert Here", class = "btn-xs btn-info"),
           shiny::actionButton("skip", "Skip",  class = "btn-xs"),
           shiny::actionButton("back", "Back", class = "btn-xs"),
+          shiny::actionButton("insert_here", "Insert Here", class = "btn-xs"),
           shiny::actionButton("abort", "Cancel", class = "btn-xs")
         ),
         shiny::conditionalPanel(
