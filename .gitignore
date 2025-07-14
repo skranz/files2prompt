@@ -5,6 +5,7 @@
 # Session Data files
 .RData
 .RDataTmp
+my_prompt.Rmd
 
 # User-specific files
 .Ruserdata
