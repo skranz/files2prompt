@@ -1,324 +1,278 @@
-Of course, I can help you with those changes to the "Apply Modifications" addin. Removing the untested "Undo" feature in favor of a more robust manual insertion option is a great idea. The improved logging will also make the tool's actions clearer.
+Of course! I'd be happy to help improve the `files2prompt` package. Adding an interactive dialog for the "Files to Prompt" add-in and improving the customization workflow are excellent ideas that will significantly enhance the user experience.
 
+Here are the proposed changes, following the specified modification format.
 
-!MODIFICATION mod_addin.R
+### `DESCRIPTION` File Update
+
+First, I'll adjust the `DESCRIPTION` file. The `shiny` and `miniUI` packages are only needed for the add-ins, so it's better to move them from `Depends` to `Suggests`. This prevents them from being installed for users who only want the programmatic features. The add-in code will check if the packages are installed before running.
+
+!MODIFICATION DESCRIPTION
 scope = "file"
-file = "mod_addin.R"
+file = "DESCRIPTION"
 is_new_file = false
-description = '''Overhaul the 'Apply Modifications' addin:
-- Remove the 'Undo' button and all associated logic.
-- Add a new 'Insert Here' button to manually apply a change at the current cursor position, which is useful when automatic location fails.
-- Add a 'Back' button to the finish screen to allow returning to the review.
-- Improve log messages to be more specific about what was changed and where.'''
+description = '''Move shiny and miniUI from Depends to Suggests, as they are only required for the interactive add-ins.'''
+---
+```
+Package: files2prompt
+Type: Package
+Title: RStudio addin to create prompt from code or text files in a project directory
+Version: 0.1.0
+Author: Sebastian Kranz
+Maintainer: Sebastian Kranz <sebastian.kranz@uni-ulm.de>
+Description: Can be customized using TOML based specifications.
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Depends:
+    restorepoint,
+    stringi,
+    RcppTOML
+Suggests:
+    rstudioapi,
+    clipr,
+    shiny,
+    miniUI
+RoxygenNote: 7.2.3
+```
+!END_MODIFICATION DESCRIPTION
+
+### Add-in Improvements
+
+Next, here are the changes for `addin.R`. This single file modification accomplishes all the requested UI and customization enhancements:
+
+1.  **Interactive UI**: The `generate_prompt_addin` function is rewritten as a Shiny gadget that shows the number of files and provides clear action buttons.
+2.  **Customization Logic**: New "Customize for Project" and "Customize for User" buttons will appear when a default package template is being used.
+3.  **User-Wide Config**: The `addin_find_config_toml` function is updated to search for configuration files in a user-specific directory (`tools::R_user_dir("files2prompt", "config")`), which takes precedence over the package's built-in templates.
+
+!MODIFICATION addin.R
+scope = "file"
+file = "addin.R"
+is_new_file = false
+description = '''Overhaul the "Files to Prompt" add-in to use a miniUI dialog, add buttons for easy project/user customization, and update the TOML search path to include a user-wide configuration directory.'''
 ---
 ```r
-# FILE: R/mod_addin.R
-#' @importFrom shiny fluidPage verbatimTextOutput actionButton observeEvent
-#' @importFrom shiny reactiveValues renderPrint shinyApp stopApp isolate runGadget
-#' @importFrom shiny uiOutput renderUI tagList h4 tags conditionalPanel reactive outputOptions req
-#' @importFrom miniUI miniPage gadgetTitleBar miniContentPanel miniTitleBarButton
 #' @keywords internal
-
-#' Navigate to a modification target in RStudio and select/highlight
-#'
-#' This function takes a *located* modification object and uses `rstudioapi`
-#' to navigate to the file and select the relevant code range.
-#'
-#' @param mod A single parsed and *located* modification object. It must
-#'   contain `mod$meta$file_path`, `start_line`, and `end_line`.
-#' @keywords internal
-navigate_to_modification_target <- function(mod, project_dir = tryCatch(rstudioapi::getActiveProject(), error = function(e) getwd())) {
-  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
-    return(invisible(NULL))
-  }
-  restore.point("navigate_to_modification_target")
-  #mod = mod_locate_target(mod, project_dir)
-
-  tryCatch({
-    target_file <- mod$meta$file_path
-    start_line <- mod$meta$start_line
-    end_line <- mod$meta$end_line
-
-    if (is.null(target_file)) {
-      return(invisible(NULL))
-    }
-
-    # If the file doesn't exist, it must be a new file modification.
-    # We create it here so the user sees it appear and we can navigate to it.
-    if (!file.exists(target_file)) {
-      dir.create(dirname(target_file), showWarnings = FALSE, recursive = TRUE)
-      file.create(target_file)
-    }
-
-    rstudioapi::navigateToFile(target_file)
-
-    # For an insertion, end_line < start_line. We just set the cursor.
-    if (end_line < start_line) {
-      rstudioapi::setCursorPosition(rstudioapi::document_position(start_line, 1))
-    } else {
-      # For replacement, select the range.
-      original_lines <- readLines(target_file, warn = FALSE)
-      end_col <- if (end_line <= length(original_lines)) {
-        nchar(original_lines[end_line]) + 1
-      } else {
-        1
-      }
-      rng <- rstudioapi::document_range(
-               rstudioapi::document_position(start_line, 1),
-               rstudioapi::document_position(end_line, end_col)
-             )
-      rstudioapi::setSelectionRanges(list(rng))
-    }
-  }, error = function(e) {
-    message("Info: Could not navigate/highlight target for '", mod$meta$file, "'. ", e$message)
-  })
-
-  invisible(NULL)
-}
-
-review_modifications_addin <- function() {
-  if (!requireNamespace("shiny", quietly = TRUE) || !requireNamespace("miniUI", quietly = TRUE)) {
-    stop("The 'shiny' and 'miniUI' packages are required for this addin.")
-  }
-  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
-      stop("This addin requires RStudio version 1.2 or higher.")
-  }
+#' @importFrom shiny h4 hr p tags textOutput renderText actionButton observeEvent req uiOutput renderUI tagList stopApp runGadget
+#' @importFrom miniUI miniPage miniContentPanel gadgetTitleBar miniTitleBarButton dialogViewer
+#' @importFrom tools R_user_dir
+generate_prompt_addin <- function() {
   library(files2prompt)
+  restore.point("generate_prompt_addin")
+
+  if (!requireNamespace("shiny", quietly = TRUE) || !requireNamespace("miniUI", quietly = TRUE)) {
+    stop("This add-in requires the {shiny} and {miniUI} packages. Please install them.")
+  }
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable("1.1.287")) {
+    stop("This add-in only works inside RStudio 1.1 or newer.")
+  }
+
   # --- 1. PRE-PROCESSING (before UI) ---
-  project_dir <- tryCatch(rstudioapi::getActiveProject(), error = function(e) getwd())
-  response_file <- find_ai_response_file()
-  raw_text <- paste(readLines(response_file, warn = FALSE), collapse = "\n")
+  proj <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
+  root_dir <- if (!is.null(proj) && dir.exists(proj)) proj else getwd()
 
-  # 1a. Parse all mods, stop on any error
-  mod_list <- parse_ai_response(raw_text)
-  if (length(mod_list) == 0) {
-    message("No valid modifications found in '", basename(response_file), "'.")
-    return(invisible())
+  config_file <- addin_find_config_toml()
+  if (!file.exists(config_file)) {
+    stop("No config_file found, which should not happen due to built-in fallbacks.")
   }
-
-  # 1b. Locate all mods, now without stopping on failure
-  cat("Locating all modification targets...\n")
-  located_mod_list <- lapply(mod_list, function(mod) {
-    # mod_locate_target now adds error info to the mod object instead of stopping
-    mod_locate_target(mod, project_dir)
+  cfg <- tryCatch(RcppTOML::parseTOML(config_file, escape = FALSE), error = function(e) {
+    stop("Error parsing TOML file '", config_file, "':\n", e$message)
   })
-  # Report any location failures
-  location_failures <- Filter(function(m) !isTRUE(m$meta$location_found), located_mod_list)
-  if (length(location_failures) > 0) {
-      cat("\nWarning: Could not locate targets for", length(location_failures), "modification(s):\n")
-      for (mod in location_failures) {
-          cat(" - File:", mod$meta$file, "| Error:", mod$meta$location_error %||% "Unknown reason", "\n")
-      }
-  }
-  cat("Target location phase complete.\n")
 
+  # Find all files to be included by replicating logic from files2prompt()
+  subgroup_names <- names(cfg)[sapply(cfg, is.list)]
+  subgroups <- if (length(subgroup_names) > 0) lapply(subgroup_names, function(g) cfg[[g]][[1]]) else list()
+  names(subgroups) <- subgroup_names
+  .main <- cfg[setdiff(names(cfg), subgroup_names)]
+  groups <- c(subgroups, list(.main = .main))
+
+  all_files <- c()
+  for (g in names(groups)) {
+    # Pass .main for template substitution in paths
+    files <- fp_find_group_files(groups[[g]], root_dir = root_dir, values = .main)
+    all_files <- union(all_files, files)
+  }
+  num_files <- length(all_files)
+
+  # Check if config is a package template
+  pkg_toml_dir <- system.file("toml", package = "files2prompt")
+  is_pkg_template <- startsWith(normalizePath(config_file, mustWork = FALSE), normalizePath(pkg_toml_dir, mustWork = FALSE))
 
   # --- 2. Define the Shiny Gadget UI ---
   ui <- miniUI::miniPage(
-    shiny::tags$head(shiny::tags$style(shiny::HTML("
-      #info_ui p { white-space: pre-wrap; word-wrap: break-word; margin-bottom: 5px; }
-      .btn-container { margin-top: 2px; }
-      .btn-container .btn { margin-right: 5px; }
-    "))),
-
+    miniUI::gadgetTitleBar("Generate Prompt",
+      right = miniUI::miniTitleBarButton("cancel", "Cancel", primary = FALSE)
+    ),
     miniUI::miniContentPanel(
-      shiny::div(class = "btn-container",
-        shiny::conditionalPanel(
-          condition = "output.mods_in_progress == true",
-          shiny::actionButton("apply", "Apply",  class = "btn-xs btn-primary"),
-          shiny::actionButton("insert_here", "Insert Here", class = "btn-xs btn-info"),
-          shiny::actionButton("skip", "Skip",  class = "btn-xs"),
-          shiny::actionButton("back", "Back", class = "btn-xs"),
-          shiny::actionButton("abort", "Cancel", class = "btn-xs")
-        ),
-        shiny::conditionalPanel(
-          condition = "output.mods_in_progress == false",
-          shiny::actionButton("back_from_finish", "Back", class = "btn-xs"),
-          shiny::actionButton("finish", "Finish", class = "btn-primary")
-        )
-      ),
-      shiny::conditionalPanel(
-        condition = "output.mods_in_progress == true",
-        shiny::uiOutput("info_ui")
-      ),
-      shiny::conditionalPanel(
-        condition = "output.mods_in_progress == false",
-        shiny::h4("All modifications processed."),
-        shiny::h5("Log of actions:"),
-        shiny::verbatimTextOutput("final_log")
-      )
+      shiny::h4(shiny::textOutput("info_text")),
+      shiny::hr(),
+      shiny::uiOutput("config_info_ui"),
+      shiny::hr(),
+      shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary")
     )
   )
 
   # --- 3. Define the Shiny Server Logic ---
   server <- function(input, output, session) {
-    rv <- shiny::reactiveValues(
-      mods = located_mod_list,
-      current = 1,
-      total = length(located_mod_list),
-      log = character(0)
-    )
+    output$info_text <- shiny::renderText({
+      paste("Found", num_files, "files to include in the prompt.")
+    })
 
-    output$mods_in_progress <- shiny::reactive({ rv$current <= rv$total })
-    shiny::outputOptions(output, "mods_in_progress", suspendWhenHidden = FALSE)
+    output$config_info_ui <- shiny::renderUI({
+      elements <- list(
+        shiny::tags$p(shiny::tags$b("Using config:"), shiny::tags$br(), shiny::tags$code(config_file))
+      )
+      if (is_pkg_template) {
+        btn_list <- list()
+        if (!is.null(proj)) {
+           btn_list <- c(btn_list, list(shiny::actionButton("customize_project", "Customize for Project", class="btn-xs")))
+        }
+        btn_list <- c(btn_list, list(shiny::actionButton("customize_user", "Customize for User", class="btn-xs")))
+        elements <- c(elements, list(shiny::tags$div(class = "btn-group", style = "margin-top: 10px;", btn_list)))
+      }
+      shiny::tagList(elements)
+    })
 
-    observeEvent(rv$current, {
-      req(rv$current >= 1, rv$current <= rv$total)
-      mod <- rv$mods[[rv$current]]
-      # RELOCATE target, as previous edits might have changed line numbers
-      tryCatch({
-        rv$mods[[rv$current]] <- mod_locate_target(mod, project_dir)
-      }, error = function(e) {
-         rstudioapi::showDialog("Relocation Error", paste("Could not re-locate target for", mod$meta$file, ":\n", e$message))
+    observeEvent(input$customize_project, {
+      shiny::req(!is.null(proj))
+      dest_file <- file.path(proj, basename(config_file))
+      if (file.exists(dest_file)) {
+        rstudioapi::showDialog("File Exists", "A file with this name already exists in your project. No action taken.")
+      } else {
+        file.copy(config_file, dest_file)
+        rstudioapi::showDialog("Copied", paste("Copied config to", dest_file, "and opening for edit."))
+        rstudioapi::navigateToFile(dest_file)
+      }
+    })
+
+    observeEvent(input$customize_user, {
+      if (!exists("R_user_dir", where = "package:tools")) {
+         rstudioapi::showDialog("Unsupported", "User-level configuration requires a newer version of R.")
          return()
-      })
-      # Only navigate if the location was actually found
-      if (isTRUE(rv$mods[[rv$current]]$meta$location_found)) {
-        navigate_to_modification_target(rv$mods[[rv$current]])
       }
-    }, ignoreInit = FALSE, ignoreNULL = TRUE) # Run on startup
+      user_config_dir <- tools::R_user_dir("files2prompt", which = "config")
+      dir.create(user_config_dir, showWarnings = FALSE, recursive = TRUE)
+      dest_file <- file.path(user_config_dir, basename(config_file))
 
-    output$info_ui <- shiny::renderUI({
-      req(rv$current <= rv$total)
-      mod <- rv$mods[[rv$current]]
-      shiny::HTML(paste0("<h4>Modification ", rv$current, " of ", rv$total, "</h4>", mod_to_html_descr(mod)))
+      if (file.exists(dest_file)) {
+        rstudioapi::showDialog("File Exists", paste("A config file already exists at:", dest_file, "No action taken."))
+        rstudioapi::navigateToFile(dest_file)
+      } else {
+        file.copy(config_file, dest_file)
+        rstudioapi::showDialog("Copied", paste("Copied config to", dest_file, "and opening for edit."))
+        rstudioapi::navigateToFile(dest_file)
+      }
     })
 
-
-    output$final_log <- shiny::renderPrint({ cat(paste(rv$log, collapse="\n")) })
-
-    observeEvent(input$apply, {
-      mod <- rv$mods[[rv$current]]
-
-      # If location was not found, treat as a skip.
-      if (!isTRUE(mod$meta$location_found)) {
-        rv$log <- c(rv$log, paste0("SKIPPED (location not found): Change ", rv$current, " (", mod$meta$scope, ") on '", mod$meta$file, "'."))
-        if (rv$current <= rv$total) rv$current <- rv$current + 1
-        return()
+    observeEvent(input$make_prompt, {
+      # Ask before continuing when too many files
+      opt_num_ask <- cfg$opt_addin_ask_files %||% 50
+      if (num_files > opt_num_ask) {
+        proceed <- rstudioapi::showQuestion(
+          title   = "Many files to process",
+          message = paste0("You are about to build a prompt from ", num_files, " files.\nThis might take a while.\n\nDo you want to continue?"),
+          ok = "Yes, continue", cancel  = "No, cancel"
+        )
+        if (!isTRUE(proceed)) return()
       }
 
-      tryCatch({
-        apply_modification_via_api(mod)
-        meta <- mod$meta
-        location_desc <- if(meta$end_line < meta$start_line) {
-            paste("insertion at line", meta$start_line)
-        } else {
-            paste("replacement at lines", meta$start_line, "to", meta$end_line)
-        }
+      prompt <- files2prompt(config_file, root_dir = root_dir, verbose = 0) # run silently
+      outfile <- file.path(tempdir(), "files2prompt.txt")
+      writeLines(prompt, outfile)
+      cat("\nPrompt written to", outfile)
 
-        scope_desc <- if (meta$scope == "function") {
-          fun_name <- meta$function_name %||% meta$insert_after_fun %||% meta$insert_before_fun %||% "(unnamed)"
-          paste0("function '", fun_name, "'")
-        } else {
-          meta$scope
-        }
-
-        log_msg <- paste0("APPLIED: Change ", rv$current, " (", scope_desc, ") in '", meta$file, "' (", location_desc, ").")
-        rv$log <- c(rv$log, log_msg)
-
-        Sys.sleep(0.5)
-        if (rv$current <= rv$total) rv$current <- rv$current + 1
-      }, error = function(e) {
-        msg <- paste("ERROR applying Change", rv$current, "to", mod$meta$file, ":", e$message)
-        rv$log <- c(rv$log, msg)
-        rstudioapi::showDialog("Error Applying Change", e$message)
-      })
-    })
-
-    observeEvent(input$insert_here, {
-      mod <- rv$mods[[rv$current]]
-      payload <- mod$payload
-      ctx <- tryCatch(rstudioapi::getSourceEditorContext(), error = function(e) NULL)
-
-      if (is.null(ctx) || is.null(ctx$id) || !nzchar(ctx$path)) {
-        msg <- "Could not get RStudio editor context. Please make sure a file is open and active."
-        rstudioapi::showDialog("Error", msg)
-        rv$log <- c(rv$log, paste("INSERT FAILED (no context): Change", rv$current))
-        return()
+      clip_res <- NULL
+      if (requireNamespace("clipr", quietly = TRUE)) {
+        clip_res <- try(clipr::write_clip(prompt), silent = TRUE)
+        if (!is(clip_res, "try-error")) cat(" and copied to clipboard.")
       }
-      # insertText uses the current selection(s) to insert or replace
-      rstudioapi::insertText(text = payload, id = ctx$id)
-      rstudioapi::documentSave(id = ctx$id)
+      cat("\nEstimated token count:", guess_token_num(prompt), "\n")
 
-      log_msg <- paste0("INSERTED (manually): Change ", rv$current, " at cursor in '", basename(ctx$path), "'.")
-      rv$log <- c(rv$log, log_msg)
-      # Do not advance current. User should inspect and then click skip.
+      rstudioapi::navigateToFile(outfile)
+      Sys.sleep(0.5) # Give RStudio time to open the file
+      ctx <- rstudioapi::getSourceEditorContext()
+      if (isTRUE(try(normalizePath(ctx$path) == normalizePath(outfile)))) {
+        last_line <- length(ctx$contents)
+        rng <- rstudioapi::document_range(
+                 rstudioapi::document_position(1, 1),
+                 rstudioapi::document_position(last_line, nchar(ctx$contents[last_line]) + 1)
+               )
+        rstudioapi::setSelectionRanges(id = ctx$id, ranges = list(rng))
+      }
+      shiny::stopApp(invisible(prompt))
     })
 
-
-    observeEvent(input$skip, {
-      mod <- rv$mods[[rv$current]]
-      rv$log <- c(rv$log, paste0("SKIPPED: Change ", rv$current, " (", mod$meta$scope, ") on '", mod$meta$file, "'."))
-      if (rv$current <= rv$total) rv$current <- rv$current + 1
+    observeEvent(input$cancel, {
+      shiny::stopApp(invisible(NULL))
     })
-
-    observeEvent(input$back, {
-      if (rv$current > 1) rv$current <- rv$current - 1
-    })
-
-    observeEvent(input$back_from_finish, {
-      if (rv$total > 0) rv$current <- rv$total
-    })
-
-
-    observeEvent(input$abort, { shiny::stopApp(invisible(rv$log)) })
-    observeEvent(input$finish, { shiny::stopApp(invisible(rv$log)) })
   }
-
-  cat("Starting modification review tool...\n")
-  shiny::runGadget(ui, server, viewer = shiny::paneViewer(minHeight = "maximize"))
-}
-mod_meta_add_info = function(meta) {
-  if (any(startsWith(names(meta), "insert"))) {
-    meta$is_insert = TRUE
-  } else {
-    meta$is_insert = FALSE
-  }
-  meta
+  shiny::runGadget(ui, server, viewer = miniUI::dialogViewer("Generate Prompt", width = 500, height = 350))
 }
 
-mod_to_html_descr = function(mod) {
-  restore.point("mod_to_html_descr")
-  meta = mod_meta_add_info(mod$meta)
+addin_find_config_toml <- function() {
+  library(files2prompt)
+  restore.point("addin_find_config_toml")
+  is_toml <- function(path) length(path) == 1L &&
+                             is.character(path)  &&
+                             file.exists(path)   &&
+                             grepl("\\.toml$", path, ignore.case = TRUE)
 
-  location_status_html <- ""
-  if (!isTRUE(meta$location_found)) {
-    err_msg <- meta$location_error %||% "Target location for modification could not be determined."
-    location_status_html <- paste0(
-      "<p style='color:red; font-weight:bold;'>Location not found: ",
-      htmltools::htmlEscape(err_msg),
-      "</p>",
-      "<p><i>This change will be skipped if you click 'Apply'. You can use 'Insert Here' to apply it manually at the cursor.</i></p>"
-    )
-  } else if (isTRUE(meta$location_is_fuzzy)) {
-    location_status_html <- paste0(
-      "<p style='color:orange; font-weight:bold;'>Note: The target location is an approximate match.",
-      " Please review the highlighted code in the editor carefully before applying.</p>"
-    )
+  ## 1 active editor file ----------
+  if (rstudioapi::isAvailable("1.1.287")) {
+    ctx <- tryCatch(rstudioapi::getSourceEditorContext(),
+                    error = function(e) NULL)
+    if (!is.null(ctx$path) && nzchar(ctx$path) && is_toml(ctx$path))
+      return(normalizePath(ctx$path, winslash = "/"))
   }
 
-  descr_str <- ""
-  if (meta$scope=="function" && meta$is_insert) {
-    descr_str <- paste0("Add function to <i>", htmltools::htmlEscape(meta$file),"</i>")
-  } else if (meta$scope=="function" && !meta$is_insert) {
-    descr_str <- paste0("Replace function <code>", htmltools::htmlEscape(meta[["function_name"]]), "</code> in <i>", htmltools::htmlEscape(meta$file), "</i>")
-  } else if (meta$scope=="file") {
-    descr_str <- paste0("Write complete file <i>", htmltools::htmlEscape(meta$file), "</i>")
-  } else if (meta$scope=="lines") {
-    descr_str <- paste0("Modify lines in <i>", htmltools::htmlEscape(meta$file), "</i>")
+  ## 2 explicit option -------------
+  opt <- getOption("file2prompt")
+  if (is.list(opt) && is_toml(opt$toml_file))
+    return(normalizePath(opt$toml_file, winslash = "/"))
+
+  ## 3 dir from option ---------
+  if (is.list(opt) && !is.null(opt$dir) && dir.exists(opt$dir)) {
+    tomls <- sort(list.files(opt$dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
+    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
   }
 
-  description_html <- paste0(
-    "<h5>", descr_str, "</h5>",
-    "<p><b>Description:</b> ", htmltools::htmlEscape(meta$descr), "</p>"
-  )
+  ## 4 project root ----------
+  proj <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
+  if (!is.null(proj) && dir.exists(proj)) {
+    tomls <- sort(list.files(proj, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
+    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
+  }
 
-  payload_html <- paste0(
-    "<h5>Proposed Change:</h5>",
-    "<pre>", htmltools::htmlEscape(mod$payload), "</pre>"
-  )
+  ## 5 User-wide config directory ----
+  if (exists("R_user_dir", where = "package:tools")) {
+    user_config_dir <- try(tools::R_user_dir("files2prompt", which = "config"), silent = TRUE)
+    if (!inherits(user_config_dir, "try-error") && dir.exists(user_config_dir)) {
+        tomls <- sort(list.files(user_config_dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
+        if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
+    }
+  }
 
-  paste0(location_status_html, description_html, payload_html)
+  ## 6 working directory ---------------
+  wd <- getwd()
+  if (!is.null(wd) && dir.exists(wd)) {
+    tomls <- sort(list.files(wd, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
+    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
+  }
+
+  ## 7 fallback for R packages ---------------------------------------------
+  if (!is.null(proj) && file.exists(file.path(proj, "DESCRIPTION"))) {
+    pkg_tpl <- system.file("toml/f2p_r_pkg.toml",
+                           package = "files2prompt", mustWork = FALSE)
+    if (nzchar(pkg_tpl) && file.exists(pkg_tpl))
+      return(pkg_tpl)
+  }
+
+  ## 8 generic default ------------------------------------------------------
+  def_tpl <- system.file("toml/f2p_default.toml",
+                         package = "files2prompt", mustWork = FALSE)
+  if (nzchar(def_tpl) && file.exists(def_tpl))
+    return(def_tpl)
+
+  stop("No TOML specification file could be located.")
 }
 ```
-!END_MODIFICATION mod_addin.R
+!END_MODIFICATION addin.R

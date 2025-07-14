@@ -13,8 +13,8 @@ Depends:
     stringi,
     RcppTOML,
     shiny,
-    miniUI
+    miniUI,
+    rstudioapi
 Suggests:
-    rstudioapi,
     clipr
 RoxygenNote: 7.2.3

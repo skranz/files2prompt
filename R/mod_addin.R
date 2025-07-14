@@ -70,8 +70,10 @@ review_modifications_addin <- function() {
       stop("This addin requires RStudio version 1.2 or higher.")
   }
   library(files2prompt)
+
   # --- 1. PRE-PROCESSING (before UI) ---
   project_dir <- tryCatch(rstudioapi::getActiveProject(), error = function(e) getwd())
+  restore.point("review_modifications_addin")
   response_file <- find_ai_response_file()
   raw_text <- paste(readLines(response_file, warn = FALSE), collapse = "\n")
 
