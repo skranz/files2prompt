@@ -1,113 +1,297 @@
-You are absolutely right! My previous fix was flawed, and I apologize for that. It seems I introduced a new bug while trying to fix the old one. The screenshot clearly shows the "Proposed Change" is being rendered as `NA`, which is definitely not the intended behavior.
+Okay, I understand the task. The goal is to make the "Customize for Project" and "Customize for User" buttons in the `generate_prompt_addin` appear under more flexible conditions, enhancing the user experience.
 
-### Analysis of the New Bug
+Here is my analysis and the proposed change:
 
-The root cause of the "NA" display is that the `mod$payload` variable in the Shiny add-in is literally getting the value `NA_character_`. When the UI tries to display this using `htmltools::htmlEscape(mod$payload)`, it correctly converts the `NA` value into the string `"NA"`.
+### Analysis of the Request
 
-This happened because my previous regex fix in `mod_parser.R` was not robust enough. Under certain conditions (likely related to newlines or empty payloads), the `stri_match_all_regex` function was successfully matching the overall pattern but failing to capture the content for the group, resulting in an `NA` for that part of the match.
+1.  **"Customize for Project" button:** This button copies the currently used TOML configuration file to the project's root directory. The request is to show this button not only when using a built-in package template but also when using a *user-level* configuration file. This allows users to easily create a project-specific copy of their global settings.
 
-### The Corrected Solution
+2.  **"Customize for User" button:** This button copies the currently used TOML configuration to the user's configuration directory. The request is to show this button not only for package templates but also when using a *project-level* configuration file, provided that its name matches one of the package's built-in templates. This allows a user to "promote" a project-specific version of a standard template to their user-level settings for use in other projects.
 
-I've rewritten the payload extraction logic in `mod_parser.R` to be much more robust. The new approach is better because:
+To implement this, I will modify the `generate_prompt_addin` function in `addin.R`. The current logic for showing these buttons is tied to a single boolean flag, `is_pkg_template`. I will replace this with a more detailed analysis of the configuration file's location (package, user, or project) and create two separate boolean flags, `show_customize_project_btn` and `show_customize_user_btn`, to control the visibility of each button independently.
 
-1.  It no longer uses `stri_trim_both()` on the payload string beforehand. Instead, the regex itself handles any surrounding whitespace (`\s*`).
-2.  It uses a non-greedy capture `(.*?)` to get the content between the fences, which is safer.
-3.  It explicitly looks for the newline `\n` before the closing ` ``` ` fence, which makes the match more precise.
+### Proposed Code Changes
 
-This ensures that the payload is correctly extracted, even for empty code blocks or other edge cases, preventing the `NA` value from ever being assigned to the payload.
+I will modify the file `addin.R`. The changes involve:
+1.  Removing the old logic that defines `is_pkg_template`.
+2.  Adding a new block of code that determines the location of the `config_file` and sets the `show_customize_project_btn` and `show_customize_user_btn` flags according to the new rules.
+3.  Updating the `renderUI` expression for `config_info_ui` in the server logic to use these new flags to conditionally render the buttons.
 
-Here is the corrected modification for `mod_parser.R`:
+Here is the modification for `addin.R`:
 
-!MODIFICATION mod_parser.R
+!MODIFICATION addin.R
 scope = "file"
-file = "mod_parser.R"
+file = "addin.R"
 is_new_file = false
-description = '''Fix a bug where the modification payload was being incorrectly parsed as NA. The regex for extracting code from markdown fences has been made much more robust to handle whitespace and empty blocks correctly.'''
+description = '''Update the logic for showing "Customize for Project" and "Customize for User" buttons in the `generate_prompt_addin`. The buttons will now appear more contextually: "Customize for Project" also shows for user-level configs, and "Customize for User" also shows for project-level configs that match a package template name.'''
 ---
 ```r
-#' Normalize AI response text to fix common formatting errors.
-#'
-#' @param text The raw text from the AI response.
-#' @return The normalized text.
 #' @keywords internal
-f2p_normalize_ai_response <- function(text) {
-  # Add a newline before a markdown fence '```' if it's not at the start of a line.
-  # This handles cases where the AI might write "description...```r" on one line.
-  text <- gsub("([^\n])```", "\\1\n```", text, perl = TRUE)
-  return(text)
-}
+#' @importFrom shiny h4 hr p tags textOutput renderText actionButton observeEvent req uiOutput renderUI tagList stopApp runGadget dialogViewer
+#' @importFrom miniUI miniPage miniContentPanel gadgetTitleBar miniTitleBarButton
+#' @importFrom tools R_user_dir
+generate_prompt_addin <- function() {
+  library(files2prompt)
+  restore.point("generate_prompt_addin")
 
-
-#' @importFrom RcppTOML parseTOML
-#' @importFrom stringi stri_split_fixed stri_trim_both stri_match_all_regex
-#' @keywords internal
-parse_ai_response <- function(text) {
-  restore.point("parse_ai_response")
-  # First, normalize the response to fix common formatting issues
-  text <- f2p_normalize_ai_response(text)
-
-  # Use regex to find all blocks between !MODIFICATION and !END_MODIFICATION
-  pattern <- "(?s)!MODIFICATION.*?\\n(.*?)\\n!END_MODIFICATION"
-  matches <- stri_match_all_regex(text, pattern)[[1]]
-
-  if (nrow(matches) == 0) {
-    return(list())
+  if (!requireNamespace("shiny", quietly = TRUE) || !requireNamespace("miniUI", quietly = TRUE)) {
+    stop("This add-in requires the {shiny} and {miniUI} packages. Please install them.")
+  }
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable("1.1.287")) {
+    stop("This add-in only works inside RStudio 1.1 or newer.")
   }
 
-  blocks <- matches[, 2] # Extract the captured group
+  # --- 1. PRE-PROCESSING (before UI) ---
+  proj <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
+  root_dir <- if (!is.null(proj) && dir.exists(proj)) proj else getwd()
 
-  parsed_mods <- list()
-  for (i in seq_along(blocks)) {
-    block <- blocks[i]
-    parts <- stri_split_fixed(block, "\n---\n", n = 2)[[1]]
+  config_file <- addin_find_config_toml()
+  if (!file.exists(config_file)) {
+    stop("No config_file found, which should not happen due to built-in fallbacks.")
+  }
+  cfg <- tryCatch(RcppTOML::parseTOML(config_file, escape = FALSE), error = function(e) {
+    stop("Error parsing TOML file '", config_file, "':\n", e$message)
+  })
 
-    if (length(parts) != 2) {
-      stop("Modification block ", i, " is malformed (missing '---' separator).")
+  # Find all files to be included by replicating logic from files2prompt()
+  subgroup_names <- names(cfg)[sapply(cfg, is.list)]
+  subgroups <- if (length(subgroup_names) > 0) lapply(subgroup_names, function(g) cfg[[g]][[1]]) else list()
+  names(subgroups) <- subgroup_names
+  .main <- cfg[setdiff(names(cfg), subgroup_names)]
+  groups <- c(subgroups, list(.main = .main))
+
+  all_files <- c()
+  for (g in names(groups)) {
+    # Pass .main for template substitution in paths
+    files <- fp_find_group_files(groups[[g]], root_dir = root_dir, values = .main)
+    all_files <- union(all_files, files)
+  }
+  num_files <- length(all_files)
+
+  # --- Determine source of config file and button visibility ---
+  pkg_toml_dir <- system.file("toml", package = "files2prompt")
+  user_config_dir <- if (exists("R_user_dir", where = "package:tools")) {
+    try(tools::R_user_dir("files2prompt", which = "config"), silent = TRUE)
+  } else { "" }
+  if (inherits(user_config_dir, "try-error") || !nzchar(user_config_dir)) user_config_dir <- NULL
+
+  # Normalize paths for robust comparison
+  norm_config_path <- normalizePath(config_file, winslash = "/", mustWork = FALSE)
+  norm_pkg_path    <- normalizePath(pkg_toml_dir, winslash = "/", mustWork = FALSE)
+  norm_user_path   <- if (!is.null(user_config_dir)) normalizePath(user_config_dir, winslash = "/", mustWork = FALSE) else NULL
+  norm_proj_path   <- if (!is.null(proj)) normalizePath(proj, winslash = "/", mustWork = FALSE) else NULL
+
+  # Check config file's location. Add trailing slash to avoid matching similar parent directories.
+  is_from_pkg <- startsWith(norm_config_path, paste0(norm_pkg_path, "/"))
+  is_from_user <- if (!is.null(norm_user_path)) startsWith(norm_config_path, paste0(norm_user_path, "/")) else FALSE
+  # `is_from_project` is true if the file is in the project dir but not in a user/pkg dir that might be nested inside
+  is_from_project <- if (!is.null(norm_proj_path)) {
+      startsWith(norm_config_path, paste0(norm_proj_path, "/")) && !is_from_pkg && !is_from_user
+    } else {
+      FALSE
+  }
+
+  # --- Logic for "Customize for Project" button ---
+  # Show if config is from package or user, and a project is active.
+  show_customize_project_btn <- !is.null(proj) && (is_from_pkg || is_from_user)
+
+  # --- Logic for "Customize for User" button ---
+  # Show if config is from package.
+  # Also show if from project, and its name matches a package template name.
+  show_customize_user_btn <- FALSE
+  if (is_from_pkg) {
+    show_customize_user_btn <- TRUE
+  } else if (is_from_project) {
+    pkg_template_files <- list.files(pkg_toml_dir)
+    if (basename(config_file) %in% pkg_template_files) {
+      show_customize_user_btn <- TRUE
     }
+  }
 
-    meta_str <- parts[1]
-    payload_str <- parts[2]
+  # --- 2. Define the Shiny Gadget UI ---
+  ui <- miniUI::miniPage(
+    miniUI::miniContentPanel(
+      shiny::h4(shiny::textOutput("info_text")),
+      shiny::hr(),
+      shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary"),
+      shiny::actionButton("cancel", "Cancel", class = ""),
+      shiny::hr(),
+      shiny::uiOutput("config_info_ui")
+    )
+  )
 
-    meta <- tryCatch({
-      meta_obj <- RcppTOML::parseTOML(meta_str, fromFile = FALSE)
-      if (is.null(meta_obj$scope) || is.null(meta_obj$file)) {
-        stop("Modification block is missing required metadata (scope, file).")
-      }
-      meta_obj
-    }, error = function(e) {
-      warning("Failed to parse metadata in modification block ", i, ": ", e$message)
-      return(list(
-        parse_error = TRUE,
-        parse_error_message = e$message,
-        raw_toml = meta_str,
-        scope = "parse_error",
-        file = "unknown",
-        description = "Metadata parsing failed."
-      ))
+  # --- 3. Define the Shiny Server Logic ---
+  server <- function(input, output, session) {
+    output$info_text <- shiny::renderText({
+      paste("Found", num_files, "files to include in the prompt.")
     })
 
-    # NEW, more robust payload extraction logic.
-    # It handles surrounding whitespace in the regex and uses a non-greedy capture.
-    pattern <- "(?s)\\s*```[a-zA-Z]*\\n(.*?)\\n```\\s*"
-    match <- stri_match_all_regex(payload_str, pattern)[[1]]
+    output$config_info_ui <- shiny::renderUI({
+      elements <- list(
+        shiny::tags$p(shiny::tags$b("Using config:"), shiny::tags$br(), shiny::tags$code(config_file))
+      )
 
-    if (nrow(match) > 0) {
-      # The second column of the match matrix contains the first capture group.
-      payload <- match[1, 2]
-    } else {
-      # If no markdown fence, assume the whole payload is the code.
-      # Here, we trim whitespace as it's not part of a fence.
-      payload <- stri_trim_both(payload_str)
-      warning("Payload in block ", i, " was not wrapped in a markdown code fence. Using entire block as payload.")
-    }
+      btn_list <- list()
+      if (show_customize_project_btn) {
+         btn_list <- c(btn_list, list(shiny::actionButton("customize_project", "Customize for Project", class="btn-xs")))
+      }
+      if (show_customize_user_btn) {
+        btn_list <- c(btn_list, list(shiny::actionButton("customize_user", "Customize for User", class="btn-xs")))
+      }
 
+      if (length(btn_list) > 0) {
+        elements <- c(elements, list(shiny::tags$div(class = "btn-group", style = "margin-top: 10px;", btn_list)))
+      }
 
-    parsed_mods[[i]] <- list(meta = meta, payload = payload)
+      shiny::tagList(elements)
+    })
+
+    observeEvent(input$customize_project, {
+      shiny::req(!is.null(proj))
+      dest_file <- file.path(proj, basename(config_file))
+      if (file.exists(dest_file)) {
+        rstudioapi::showDialog("File Exists", "A file with this name already exists in your project. No action taken.")
+      } else {
+        file.copy(config_file, dest_file)
+        rstudioapi::showDialog("Copied", paste("Copied config to", dest_file, "and opening for edit."))
+        rstudioapi::navigateToFile(dest_file)
+      }
+    })
+
+    observeEvent(input$customize_user, {
+      if (!exists("R_user_dir", where = "package:tools")) {
+         rstudioapi::showDialog("Unsupported", "User-level configuration requires a newer version of R.")
+         return()
+      }
+      user_config_dir <- tools::R_user_dir("files2prompt", which = "config")
+      dir.create(user_config_dir, showWarnings = FALSE, recursive = TRUE)
+      dest_file <- file.path(user_config_dir, basename(config_file))
+
+      if (file.exists(dest_file)) {
+        rstudioapi::showDialog("File Exists", paste("A config file already exists at:", dest_file, "No action taken."))
+        rstudioapi::navigateToFile(dest_file)
+      } else {
+        file.copy(config_file, dest_file)
+        rstudioapi::showDialog("Copied", paste("Copied config to", dest_file, "and opening for edit."))
+        rstudioapi::navigateToFile(dest_file)
+      }
+    })
+
+    observeEvent(input$make_prompt, {
+      prompt <- files2prompt(config_file, root_dir = root_dir, verbose = 0) # run silently
+
+      # Determine output file path based on config
+      opt_file <- cfg$opt_prompt_file
+      if (is.null(opt_file)) {
+        outfile <- file.path(tempdir(), "files2prompt.md")
+      } else {
+        if (startsWith(opt_file, "<tempdir>/")) {
+          filename <- sub("<tempdir>/", "", opt_file, fixed = TRUE)
+          outfile <- file.path(tempdir(), filename)
+        } else {
+          outfile <- file.path(root_dir, opt_file)
+        }
+      }
+
+      # Ensure the directory for the output file exists
+      dir.create(dirname(outfile), showWarnings = FALSE, recursive = TRUE)
+
+      writeLines(prompt, outfile)
+      cat("\nPrompt written to", outfile)
+
+      clip_res <- NULL
+      if (requireNamespace("clipr", quietly = TRUE)) {
+        clip_res <- try(clipr::write_clip(prompt), silent = TRUE)
+        if (!is(clip_res, "try-error")) cat(" and copied to clipboard.")
+      }
+      cat("\nEstimated token count:", guess_token_num(prompt), "\n")
+
+      rstudioapi::navigateToFile(outfile)
+      Sys.sleep(0.5) # Give RStudio time to open the file
+      ctx <- rstudioapi::getSourceEditorContext()
+      if (isTRUE(try(normalizePath(ctx$path) == normalizePath(outfile)))) {
+        last_line <- length(ctx$contents)
+        rng <- rstudioapi::document_range(
+                 rstudioapi::document_position(1, 1),
+                 rstudioapi::document_position(last_line, nchar(ctx$contents[last_line]) + 1)
+               )
+        rstudioapi::setSelectionRanges(id = ctx$id, ranges = list(rng))
+      }
+      shiny::stopApp(invisible(prompt))
+    })
+
+    observeEvent(input$cancel, {
+      shiny::stopApp(invisible(NULL))
+    })
+  }
+  shiny::runGadget(ui, server, viewer = shiny::dialogViewer("Generate Prompt", width = 500, height = 350))
+}
+
+addin_find_config_toml <- function() {
+  library(files2prompt)
+  restore.point("addin_find_config_toml")
+  is_toml <- function(path) length(path) == 1L &&
+                             is.character(path)  &&
+                             file.exists(path)   &&
+                             grepl("\\.toml$", path, ignore.case = TRUE)
+
+  ## 1 active editor file ----------
+  if (rstudioapi::isAvailable("1.1.287")) {
+    ctx <- tryCatch(rstudioapi::getSourceEditorContext(),
+                    error = function(e) NULL)
+    if (!is.null(ctx$path) && nzchar(ctx$path) && is_toml(ctx$path))
+      return(normalizePath(ctx$path, winslash = "/"))
   }
 
-  return(parsed_mods)
+  ## 2 explicit option -------------
+  opt <- getOption("file2prompt")
+  if (is.list(opt) && is_toml(opt$toml_file))
+    return(normalizePath(opt$toml_file, winslash = "/"))
+
+  ## 3 dir from option ---------
+  if (is.list(opt) && !is.null(opt$dir) && dir.exists(opt$dir)) {
+    tomls <- sort(list.files(opt$dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
+    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
+  }
+
+  ## 4 project root ----------
+  proj <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
+  if (!is.null(proj) && dir.exists(proj)) {
+    tomls <- sort(list.files(proj, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
+    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
+  }
+
+  ## 5 User-wide config directory ----
+  if (exists("R_user_dir", where = "package:tools")) {
+    user_config_dir <- try(tools::R_user_dir("files2prompt", which = "config"), silent = TRUE)
+    if (!inherits(user_config_dir, "try-error") && dir.exists(user_config_dir)) {
+        tomls <- sort(list.files(user_config_dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
+        if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
+    }
+  }
+
+  ## 6 working directory ---------------
+  wd <- getwd()
+  if (!is.null(wd) && dir.exists(wd)) {
+    tomls <- sort(list.files(wd, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
+    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
+  }
+
+  ## 7 fallback for R packages ---------------------------------------------
+  if (!is.null(proj) && file.exists(file.path(proj, "DESCRIPTION"))) {
+    pkg_tpl <- system.file("toml/f2p_r_pkg.toml",
+                           package = "files2prompt", mustWork = FALSE)
+    if (nzchar(pkg_tpl) && file.exists(pkg_tpl))
+      return(pkg_tpl)
+  }
+
+  ## 8 generic default ------------------------------------------------------
+  def_tpl <- system.file("toml/f2p_default.toml",
+                         package = "files2prompt", mustWork = FALSE)
+  if (nzchar(def_tpl) && file.exists(def_tpl))
+    return(def_tpl)
+
+  stop("No TOML specification file could be located.")
 }
 ```
-!END_MODIFICATION mod_parser.R
-
-Thank you for catching this and providing the screenshot. Applying this change should fix the "NA" issue for good and make the parser more reliable overall.
+!END_MODIFICATION addin.R

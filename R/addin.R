@@ -40,9 +40,45 @@ generate_prompt_addin <- function() {
   }
   num_files <- length(all_files)
 
-  # Check if config is a package template
+  # --- Determine source of config file and button visibility ---
   pkg_toml_dir <- system.file("toml", package = "files2prompt")
-  is_pkg_template <- startsWith(normalizePath(config_file, mustWork = FALSE), normalizePath(pkg_toml_dir, mustWork = FALSE))
+  user_config_dir <- if (exists("R_user_dir", where = "package:tools")) {
+    try(tools::R_user_dir("files2prompt", which = "config"), silent = TRUE)
+  } else { "" }
+  if (inherits(user_config_dir, "try-error") || !nzchar(user_config_dir)) user_config_dir <- NULL
+
+  # Normalize paths for robust comparison
+  norm_config_path <- normalizePath(config_file, winslash = "/", mustWork = FALSE)
+  norm_pkg_path    <- normalizePath(pkg_toml_dir, winslash = "/", mustWork = FALSE)
+  norm_user_path   <- if (!is.null(user_config_dir)) normalizePath(user_config_dir, winslash = "/", mustWork = FALSE) else NULL
+  norm_proj_path   <- if (!is.null(proj)) normalizePath(proj, winslash = "/", mustWork = FALSE) else NULL
+
+  # Check config file's location. Add trailing slash to avoid matching similar parent directories.
+  is_from_pkg <- startsWith(norm_config_path, paste0(norm_pkg_path, "/"))
+  is_from_user <- if (!is.null(norm_user_path)) startsWith(norm_config_path, paste0(norm_user_path, "/")) else FALSE
+  # `is_from_project` is true if the file is in the project dir but not in a user/pkg dir that might be nested inside
+  is_from_project <- if (!is.null(norm_proj_path)) {
+      startsWith(norm_config_path, paste0(norm_proj_path, "/")) && !is_from_pkg && !is_from_user
+    } else {
+      FALSE
+  }
+
+  # --- Logic for "Customize for Project" button ---
+  # Show if config is from package or user, and a project is active.
+  show_customize_project_btn <- !is.null(proj) && (is_from_pkg || is_from_user)
+
+  # --- Logic for "Customize for User" button ---
+  # Show if config is from package.
+  # Also show if from project, and its name matches a package template name.
+  show_customize_user_btn <- FALSE
+  if (is_from_pkg) {
+    show_customize_user_btn <- TRUE
+  } else if (is_from_project) {
+    pkg_template_files <- list.files(pkg_toml_dir)
+    if (basename(config_file) %in% pkg_template_files) {
+      show_customize_user_btn <- TRUE
+    }
+  }
 
   # --- 2. Define the Shiny Gadget UI ---
   ui <- miniUI::miniPage(
@@ -66,14 +102,19 @@ generate_prompt_addin <- function() {
       elements <- list(
         shiny::tags$p(shiny::tags$b("Using config:"), shiny::tags$br(), shiny::tags$code(config_file))
       )
-      if (is_pkg_template) {
-        btn_list <- list()
-        if (!is.null(proj)) {
-           btn_list <- c(btn_list, list(shiny::actionButton("customize_project", "Customize for Project", class="btn-xs")))
-        }
+
+      btn_list <- list()
+      if (show_customize_project_btn) {
+         btn_list <- c(btn_list, list(shiny::actionButton("customize_project", "Customize for Project", class="btn-xs")))
+      }
+      if (show_customize_user_btn) {
         btn_list <- c(btn_list, list(shiny::actionButton("customize_user", "Customize for User", class="btn-xs")))
+      }
+
+      if (length(btn_list) > 0) {
         elements <- c(elements, list(shiny::tags$div(class = "btn-group", style = "margin-top: 10px;", btn_list)))
       }
+
       shiny::tagList(elements)
     })
 
