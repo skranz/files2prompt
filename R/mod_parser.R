@@ -1,13 +1,31 @@
-#' Normalize AI response text to fix common formatting errors.
+#' Normalise AI response text to fix common formatting errors.
 #'
-#' @param text The raw text from the AI response.
-#' @return The normalized text.
+#' Inserts a newline before a Markdown fence (```),
+#' except when the fence is already at the start of the line
+#' **or** when that line contains a double quote before **and** after the fence
+#' (heuristic for “inside a string literal”).
+#'
+#' @param text Character scalar: raw AI response.
+#' @return Character scalar: normalised text.
 #' @keywords internal
 f2p_normalize_ai_response <- function(text) {
-  # Add a newline before a markdown fence if it's not at the start of a line.
-  # This handles cases where the AI might write "description...'''r" on one line.
-  text <- gsub("([^\n])```", "\\1\n```", text, perl = TRUE)
-  return(text)
+  stopifnot(is.character(text), length(text) == 1)
+
+  lines = stringi::stri_split_lines(text, omit_empty = FALSE)[[1]]
+
+  has_fence      = stringi::stri_detect_fixed(lines, "```")
+  fence_at_start = stringi::stri_detect_regex(lines, "^```")
+  fence_in_quote = stringi::stri_detect_regex(lines, "\".*```.*\"")
+
+  target = has_fence & !fence_at_start & !fence_in_quote
+
+  lines[target] = stringi::stri_replace_all_regex(
+    lines[target],
+    "([^\\n])```",   # non-newline immediately followed by ```
+    "$1\n```"
+  )
+
+  stringi::stri_join(lines, collapse = "\n")
 }
 
 
