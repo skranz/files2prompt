@@ -4,11 +4,12 @@
 #' @return The normalized text.
 #' @keywords internal
 f2p_normalize_ai_response <- function(text) {
-  # Add a newline before a markdown fence '```' if it's not at the start of a line.
-  # This handles cases where the AI might write "description...```r" on one line.
+  # Add a newline before a markdown fence if it's not at the start of a line.
+  # This handles cases where the AI might write "description...'''r" on one line.
   text <- gsub("([^\n])```", "\\1\n```", text, perl = TRUE)
   return(text)
 }
+
 
 #' @importFrom RcppTOML parseTOML
 #' @importFrom stringi stri_split_fixed stri_trim_both stri_match_all_regex
@@ -41,29 +42,38 @@ parse_ai_response <- function(text) {
     payload_str <- parts[2]
 
     meta <- tryCatch({
-      RcppTOML::parseTOML(meta_str, fromFile = FALSE)
+      meta_obj <- RcppTOML::parseTOML(meta_str, fromFile = FALSE)
+      if (is.null(meta_obj$scope) || is.null(meta_obj$file)) {
+        stop("Modification block is missing required metadata (scope, file).")
+      }
+      meta_obj
     }, error = function(e) {
-      stop("Failed to parse TOML in modification block ", i, ": ", e$message)
+      warning("Failed to parse metadata in modification block ", i, ": ", e$message)
+      return(list(
+        parse_error = TRUE,
+        parse_error_message = e$message,
+        raw_toml = meta_str,
+        scope = "parse_error",
+        file = "unknown",
+        description = "Metadata parsing failed."
+      ))
     })
 
-    if (is.null(meta$scope) || is.null(meta$file)) {
-      stop("Modification block ", i, " is missing required metadata (scope, file).")
-    }
+    # NEW, more robust payload extraction logic.
+    # It handles surrounding whitespace in the regex and uses a non-greedy capture.
+    pattern <- "(?s)\\s*```[a-zA-Z]*\\n(.*?)\\n```\\s*"
+    match <- stri_match_all_regex(payload_str, pattern)[[1]]
 
-    # Extract code from the markdown fence
-    payload_match <- regexpr("(?s)^```[a-zA-Z]*\\n(.*?)\\n```\\s*$", payload_str, perl = TRUE)
-    if (payload_match != -1) {
-      start <- attr(payload_match, "capture.start")[1]
-      len <- attr(payload_match, "capture.length")[1]
-      payload <- substr(payload_str, start, start + len - 1)
-    } else if (stri_trim_both(payload_str) == "```\n```") {
-      # Handle empty code block
-      payload <- ""
+    if (nrow(match) > 0) {
+      # The second column of the match matrix contains the first capture group.
+      payload <- match[1, 2]
     } else {
-      # If no markdown fence, assume the whole payload is the code
-      payload <- payload_str
+      # If no markdown fence, assume the whole payload is the code.
+      # Here, we trim whitespace as it's not part of a fence.
+      payload <- stri_trim_both(payload_str)
       warning("Payload in block ", i, " was not wrapped in a markdown code fence. Using entire block as payload.")
     }
+
 
     parsed_mods[[i]] <- list(meta = meta, payload = payload)
   }

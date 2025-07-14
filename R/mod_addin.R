@@ -77,7 +77,7 @@ review_modifications_addin <- function() {
   response_file <- find_ai_response_file()
   raw_text <- paste(readLines(response_file, warn = FALSE), collapse = "\n")
 
-  # 1a. Parse all mods, stop on any error
+  # 1a. Parse all mods, now without stopping on TOML errors
   mod_list <- parse_ai_response(raw_text)
   if (length(mod_list) == 0) {
     message("No valid modifications found in '", basename(response_file), "'.")
@@ -178,9 +178,10 @@ review_modifications_addin <- function() {
     observeEvent(input$apply, {
       mod <- rv$mods[[rv$current]]
 
-      # If location was not found, treat as a skip.
+      # If location was not found (which includes parse errors), treat as a skip.
       if (!isTRUE(mod$meta$location_found)) {
-        rv$log <- c(rv$log, paste0("SKIPPED (location not found): Change ", rv$current, " (", mod$meta$scope, ") on '", mod$meta$file, "'."))
+        reason <- mod$meta$location_error %||% "location not found"
+        rv$log <- c(rv$log, paste0("SKIPPED (", reason, "): Change ", rv$current, " for '", mod$meta$file, "'."))
         if (rv$current <= rv$total) rv$current <- rv$current + 1
         return()
       }
@@ -269,6 +270,24 @@ mod_to_html_descr = function(mod) {
   restore.point("mod_to_html_descr")
   meta = mod_meta_add_info(mod$meta)
 
+  # Handle TOML parse error first
+  if (isTRUE(meta$parse_error)) {
+    error_html <- paste0(
+      "<p style='color:red; font-weight:bold;'>Metadata Parsing Error: ",
+      htmltools::htmlEscape(meta$parse_error_message %||% "Unknown error"),
+      "</p>",
+      "<p><i>The metadata for this block could not be read. 'Apply' will skip this change. You can use 'Insert Here' to apply the payload manually at the cursor.</i></p>",
+      "<h5>Original Metadata Block:</h5>",
+      "<pre>", htmltools::htmlEscape(meta$raw_toml %||% ""), "</pre>"
+    )
+    payload_html <- paste0(
+      "<h5>Payload:</h5>",
+      "<pre>", htmltools::htmlEscape(mod$payload), "</pre>"
+    )
+    return(paste0(error_html, payload_html))
+  }
+
+
   location_status_html <- ""
   if (!isTRUE(meta$location_found)) {
     err_msg <- meta$location_error %||% "Target location for modification could not be determined."
@@ -298,7 +317,7 @@ mod_to_html_descr = function(mod) {
 
   description_html <- paste0(
     "<h5>", descr_str, "</h5>",
-    "<p><b>Description:</b> ", htmltools::htmlEscape(meta$descr), "</p>"
+    "<p><b>Description:</b> ", htmltools::htmlEscape(meta$description), "</p>"
   )
 
   payload_html <- paste0(

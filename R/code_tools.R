@@ -14,12 +14,18 @@ extract_function_source = function(code) {
   library(dplyr)
   stopifnot(is.character(code))
   code = paste0(code, collapse="\n")
-  if (is.null(code)) return(NULL)
+  if (is.null(code) || nchar(trimws(code)) == 0) return(tibble())
 
   # Parse once, keep the full source map
-  pd = utils::getParseData(parse(text = code, keep.source = TRUE))
+  pd <- tryCatch(
+    utils::getParseData(parse(text = code, keep.source = TRUE)),
+    error = function(e) {
+      warning("Code parsing failed in extract_function_source (this is ok if the file is not R code or contains syntax errors). Error: ", e$message)
+      return(NULL)
+    }
+  )
 
-  if (nrow(pd) == 0) {
+  if (is.null(pd) || nrow(pd) == 0) {
     return(tibble())
   }
 
@@ -81,3 +87,4 @@ extract_function_source = function(code) {
     )
   })) %>% arrange(start_line_fun)
 }
+

@@ -1,10 +1,3 @@
-# FILE: R/mod_loc.R
-
-#' @importFrom utils getParseData adist
-#' @keywords internal
-
-# --- Main Dispatcher ---
-
 #' Locate the target for a modification
 #'
 #' This is the main dispatcher function. It takes a `mod` object, finds its
@@ -17,6 +10,17 @@
 #' @return The modified `mod` object with location information.
 mod_locate_target <- function(mod, project_dir) {
   restore.point("mod_locate_target")
+
+  # Handle case where TOML parsing failed upstream
+  if (isTRUE(mod$meta$parse_error)) {
+    mod$meta$location_found <- FALSE
+    mod$meta$location_is_fuzzy <- FALSE
+    mod$meta$location_error <- mod$meta$parse_error_message %||% "TOML metadata could not be parsed."
+    mod$meta$start_line <- 1
+    mod$meta$end_line <- 0
+    return(mod)
+  }
+
   scope <- mod$meta$scope
 
   # Initialize meta fields for location status
