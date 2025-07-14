@@ -54,6 +54,17 @@ Below are relevant files from my R project.
 task = '''
 
 #######################################################
+# Coding Style
+#######################################################
+
+If you write R code follow the following style:
+
+- Prefer = for assignment instead of <-
+- In dplyr verbs don't use .data$x to asses a column x, just write x
+- For string operations use stringi
+
+
+#######################################################
 # YOUR TASK
 #######################################################
 
