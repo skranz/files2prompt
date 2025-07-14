@@ -1,59 +1,20 @@
-Of course! I'd be happy to help improve the `files2prompt` package. Adding an interactive dialog for the "Files to Prompt" add-in and improving the customization workflow are excellent ideas that will significantly enhance the user experience.
-
-Here are the proposed changes, following the specified modification format.
-
-### `DESCRIPTION` File Update
-
-First, I'll adjust the `DESCRIPTION` file. The `shiny` and `miniUI` packages are only needed for the add-ins, so it's better to move them from `Depends` to `Suggests`. This prevents them from being installed for users who only want the programmatic features. The add-in code will check if the packages are installed before running.
-
-!MODIFICATION DESCRIPTION
-scope = "file"
-file = "DESCRIPTION"
-is_new_file = false
-description = '''Move shiny and miniUI from Depends to Suggests, as they are only required for the interactive add-ins.'''
----
-```
-Package: files2prompt
-Type: Package
-Title: RStudio addin to create prompt from code or text files in a project directory
-Version: 0.1.0
-Author: Sebastian Kranz
-Maintainer: Sebastian Kranz <sebastian.kranz@uni-ulm.de>
-Description: Can be customized using TOML based specifications.
-License: MIT
-Encoding: UTF-8
-LazyData: true
-Depends:
-    restorepoint,
-    stringi,
-    RcppTOML
-Suggests:
-    rstudioapi,
-    clipr,
-    shiny,
-    miniUI
-RoxygenNote: 7.2.3
-```
-!END_MODIFICATION DESCRIPTION
-
-### Add-in Improvements
-
-Next, here are the changes for `addin.R`. This single file modification accomplishes all the requested UI and customization enhancements:
-
-1.  **Interactive UI**: The `generate_prompt_addin` function is rewritten as a Shiny gadget that shows the number of files and provides clear action buttons.
-2.  **Customization Logic**: New "Customize for Project" and "Customize for User" buttons will appear when a default package template is being used.
-3.  **User-Wide Config**: The `addin_find_config_toml` function is updated to search for configuration files in a user-specific directory (`tools::R_user_dir("files2prompt", "config")`), which takes precedence over the package's built-in templates.
+Of course! I will implement the requested changes. Here are the proposed modifications to your R project files, following the specified format.
 
 !MODIFICATION addin.R
-scope = "file"
+scope = "function"
 file = "addin.R"
-is_new_file = false
-description = '''Overhaul the "Files to Prompt" add-in to use a miniUI dialog, add buttons for easy project/user customization, and update the TOML search path to include a user-wide configuration directory.'''
+function_name = "generate_prompt_addin"
+description = '''Updates the 'generate_prompt_addin' function to:
+1. Fix the 'Cancel' button.
+2. Remove the 'opt_addin_ask_files' logic.
+3. Change the default prompt output file to 'files2prompt.md'.
+4. Add support for the 'opt_prompt_file' TOML option to specify a custom output path for the prompt file, including support for '<tempdir>/'.
+'''
 ---
 ```r
 #' @keywords internal
-#' @importFrom shiny h4 hr p tags textOutput renderText actionButton observeEvent req uiOutput renderUI tagList stopApp runGadget
-#' @importFrom miniUI miniPage miniContentPanel gadgetTitleBar miniTitleBarButton dialogViewer
+#' @importFrom shiny h4 hr p tags textOutput renderText actionButton observeEvent req uiOutput renderUI tagList stopApp runGadget dialogViewer
+#' @importFrom miniUI miniPage miniContentPanel gadgetTitleBar miniTitleBarButton
 #' @importFrom tools R_user_dir
 generate_prompt_addin <- function() {
   library(files2prompt)
@@ -99,15 +60,13 @@ generate_prompt_addin <- function() {
 
   # --- 2. Define the Shiny Gadget UI ---
   ui <- miniUI::miniPage(
-    miniUI::gadgetTitleBar("Generate Prompt",
-      right = miniUI::miniTitleBarButton("cancel", "Cancel", primary = FALSE)
-    ),
     miniUI::miniContentPanel(
       shiny::h4(shiny::textOutput("info_text")),
       shiny::hr(),
-      shiny::uiOutput("config_info_ui"),
+      shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary"),
+      shiny::actionButton("cancel", "Cancel", class = ""),
       shiny::hr(),
-      shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary")
+      shiny::uiOutput("config_info_ui")
     )
   )
 
@@ -164,19 +123,24 @@ generate_prompt_addin <- function() {
     })
 
     observeEvent(input$make_prompt, {
-      # Ask before continuing when too many files
-      opt_num_ask <- cfg$opt_addin_ask_files %||% 50
-      if (num_files > opt_num_ask) {
-        proceed <- rstudioapi::showQuestion(
-          title   = "Many files to process",
-          message = paste0("You are about to build a prompt from ", num_files, " files.\nThis might take a while.\n\nDo you want to continue?"),
-          ok = "Yes, continue", cancel  = "No, cancel"
-        )
-        if (!isTRUE(proceed)) return()
+      prompt <- files2prompt(config_file, root_dir = root_dir, verbose = 0) # run silently
+
+      # Determine output file path based on config
+      opt_file <- cfg$opt_prompt_file
+      if (is.null(opt_file)) {
+        outfile <- file.path(tempdir(), "files2prompt.md")
+      } else {
+        if (startsWith(opt_file, "<tempdir>/")) {
+          filename <- sub("<tempdir>/", "", opt_file, fixed = TRUE)
+          outfile <- file.path(tempdir(), filename)
+        } else {
+          outfile <- file.path(root_dir, opt_file)
+        }
       }
 
-      prompt <- files2prompt(config_file, root_dir = root_dir, verbose = 0) # run silently
-      outfile <- file.path(tempdir(), "files2prompt.txt")
+      # Ensure the directory for the output file exists
+      dir.create(dirname(outfile), showWarnings = FALSE, recursive = TRUE)
+
       writeLines(prompt, outfile)
       cat("\nPrompt written to", outfile)
 
@@ -205,74 +169,7 @@ generate_prompt_addin <- function() {
       shiny::stopApp(invisible(NULL))
     })
   }
-  shiny::runGadget(ui, server, viewer = miniUI::dialogViewer("Generate Prompt", width = 500, height = 350))
-}
-
-addin_find_config_toml <- function() {
-  library(files2prompt)
-  restore.point("addin_find_config_toml")
-  is_toml <- function(path) length(path) == 1L &&
-                             is.character(path)  &&
-                             file.exists(path)   &&
-                             grepl("\\.toml$", path, ignore.case = TRUE)
-
-  ## 1 active editor file ----------
-  if (rstudioapi::isAvailable("1.1.287")) {
-    ctx <- tryCatch(rstudioapi::getSourceEditorContext(),
-                    error = function(e) NULL)
-    if (!is.null(ctx$path) && nzchar(ctx$path) && is_toml(ctx$path))
-      return(normalizePath(ctx$path, winslash = "/"))
-  }
-
-  ## 2 explicit option -------------
-  opt <- getOption("file2prompt")
-  if (is.list(opt) && is_toml(opt$toml_file))
-    return(normalizePath(opt$toml_file, winslash = "/"))
-
-  ## 3 dir from option ---------
-  if (is.list(opt) && !is.null(opt$dir) && dir.exists(opt$dir)) {
-    tomls <- sort(list.files(opt$dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
-    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
-  }
-
-  ## 4 project root ----------
-  proj <- tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
-  if (!is.null(proj) && dir.exists(proj)) {
-    tomls <- sort(list.files(proj, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
-    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
-  }
-
-  ## 5 User-wide config directory ----
-  if (exists("R_user_dir", where = "package:tools")) {
-    user_config_dir <- try(tools::R_user_dir("files2prompt", which = "config"), silent = TRUE)
-    if (!inherits(user_config_dir, "try-error") && dir.exists(user_config_dir)) {
-        tomls <- sort(list.files(user_config_dir, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
-        if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
-    }
-  }
-
-  ## 6 working directory ---------------
-  wd <- getwd()
-  if (!is.null(wd) && dir.exists(wd)) {
-    tomls <- sort(list.files(wd, pattern = ".*f2p.*\\.toml$", full.names = TRUE))
-    if (length(tomls)) return(normalizePath(tomls[1], winslash = "/"))
-  }
-
-  ## 7 fallback for R packages ---------------------------------------------
-  if (!is.null(proj) && file.exists(file.path(proj, "DESCRIPTION"))) {
-    pkg_tpl <- system.file("toml/f2p_r_pkg.toml",
-                           package = "files2prompt", mustWork = FALSE)
-    if (nzchar(pkg_tpl) && file.exists(pkg_tpl))
-      return(pkg_tpl)
-  }
-
-  ## 8 generic default ------------------------------------------------------
-  def_tpl <- system.file("toml/f2p_default.toml",
-                         package = "files2prompt", mustWork = FALSE)
-  if (nzchar(def_tpl) && file.exists(def_tpl))
-    return(def_tpl)
-
-  stop("No TOML specification file could be located.")
+  shiny::runGadget(ui, server, viewer = shiny::dialogViewer("Generate Prompt", width = 500, height = 350))
 }
 ```
 !END_MODIFICATION addin.R

@@ -1,6 +1,6 @@
 #' @keywords internal
-#' @importFrom shiny h4 hr p tags textOutput renderText actionButton observeEvent req uiOutput renderUI tagList stopApp runGadget
-#' @importFrom miniUI miniPage miniContentPanel gadgetTitleBar miniTitleBarButton dialogViewer
+#' @importFrom shiny h4 hr p tags textOutput renderText actionButton observeEvent req uiOutput renderUI tagList stopApp runGadget dialogViewer
+#' @importFrom miniUI miniPage miniContentPanel gadgetTitleBar miniTitleBarButton
 #' @importFrom tools R_user_dir
 generate_prompt_addin <- function() {
   library(files2prompt)
@@ -46,15 +46,13 @@ generate_prompt_addin <- function() {
 
   # --- 2. Define the Shiny Gadget UI ---
   ui <- miniUI::miniPage(
-    miniUI::gadgetTitleBar("Generate Prompt",
-      right = miniUI::miniTitleBarButton("cancel", "Cancel", primary = FALSE)
-    ),
     miniUI::miniContentPanel(
       shiny::h4(shiny::textOutput("info_text")),
       shiny::hr(),
-      shiny::uiOutput("config_info_ui"),
+      shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary"),
+      shiny::actionButton("make_prompt_cancel", "Cancel", class = ""),
       shiny::hr(),
-      shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary")
+      shiny::uiOutput("config_info_ui")
     )
   )
 
@@ -152,7 +150,7 @@ generate_prompt_addin <- function() {
       shiny::stopApp(invisible(NULL))
     })
   }
-  shiny::runGadget(ui, server, viewer = miniUI::dialogViewer("Generate Prompt", width = 500, height = 350))
+  shiny::runGadget(ui, server, viewer = shiny::dialogViewer("Generate Prompt", width = 500, height = 350))
 }
 
 addin_find_config_toml <- function() {

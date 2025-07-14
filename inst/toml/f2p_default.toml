@@ -5,6 +5,3 @@ include_files  = '''
 *.r
 '''
 
-# Option for maximum number of files
-# reduces risk to accidentially run far too long
-opt_addin_ask_files = 20
