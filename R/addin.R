@@ -50,7 +50,7 @@ generate_prompt_addin <- function() {
       shiny::h4(shiny::textOutput("info_text")),
       shiny::hr(),
       shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary"),
-      shiny::actionButton("make_prompt_cancel", "Cancel", class = ""),
+      shiny::actionButton("cancel", "Cancel", class = ""),
       shiny::hr(),
       shiny::uiOutput("config_info_ui")
     )
@@ -109,19 +109,24 @@ generate_prompt_addin <- function() {
     })
 
     observeEvent(input$make_prompt, {
-      # Ask before continuing when too many files
-      opt_num_ask <- cfg$opt_addin_ask_files %||% 50
-      if (num_files > opt_num_ask) {
-        proceed <- rstudioapi::showQuestion(
-          title   = "Many files to process",
-          message = paste0("You are about to build a prompt from ", num_files, " files.\nThis might take a while.\n\nDo you want to continue?"),
-          ok = "Yes, continue", cancel  = "No, cancel"
-        )
-        if (!isTRUE(proceed)) return()
+      prompt <- files2prompt(config_file, root_dir = root_dir, verbose = 0) # run silently
+
+      # Determine output file path based on config
+      opt_file <- cfg$opt_prompt_file
+      if (is.null(opt_file)) {
+        outfile <- file.path(tempdir(), "files2prompt.md")
+      } else {
+        if (startsWith(opt_file, "<tempdir>/")) {
+          filename <- sub("<tempdir>/", "", opt_file, fixed = TRUE)
+          outfile <- file.path(tempdir(), filename)
+        } else {
+          outfile <- file.path(root_dir, opt_file)
+        }
       }
 
-      prompt <- files2prompt(config_file, root_dir = root_dir, verbose = 0) # run silently
-      outfile <- file.path(tempdir(), "files2prompt.txt")
+      # Ensure the directory for the output file exists
+      dir.create(dirname(outfile), showWarnings = FALSE, recursive = TRUE)
+
       writeLines(prompt, outfile)
       cat("\nPrompt written to", outfile)
 

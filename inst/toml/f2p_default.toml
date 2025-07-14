@@ -5,3 +5,7 @@ include_files  = '''
 *.r
 '''
 
+# To save to the project root, use a simple filename like:
+# opt_prompt_file = "my_prompt.md"
+opt_prompt_file = "<tempdir>/files2prompt.md"
+

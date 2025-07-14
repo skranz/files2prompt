@@ -1,3 +1,4 @@
+opt_prompt_file = "my_prompt.Rmd"
 
 ################################################
 # Which files go in?
@@ -9,7 +10,6 @@
 # Here all included files will be defined
 # in the corresponding groups below.
 include_files = '''
-*.toml
 '''
 
 exclude_files = '''
@@ -44,6 +44,15 @@ Below are relevant files from my R project.
 
 {{snippets}}
 
+################################################
+# Default TOML configs in inst/toml
+################################################
+
+{{tomls}}
+
+################################################
+# README (possible outdated)
+################################################
 
 {{README}}
 
@@ -92,6 +101,12 @@ R/*.r
 include_files  = '''
 inst/snippets/*.*
 '''
+
+[[tomls]]
+include_files  = '''
+inst/toml/*.toml
+'''
+
 [[README]]
 include_files = "README.md"
 group_template = '''

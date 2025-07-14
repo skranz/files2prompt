@@ -6,6 +6,8 @@
 # We use globs instead of regular expressions
 ################################################
 
+
+
 # Here all included files will be defined
 # in the corresponding groups below.
 include_files = '''
@@ -14,6 +16,10 @@ include_files = '''
 exclude_files = '''
 *f2p_*.toml
 '''
+
+# To save to the project root, use a simple filename like:
+# opt_prompt_file = "my_prompt.md"
+opt_prompt_file = "<tempdir>/files2prompt.md"
 
 
 ################################################
