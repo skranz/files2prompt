@@ -18,7 +18,6 @@ navigate_to_modification_target <- function(mod, project_dir = tryCatch(rstudioa
     return(invisible(NULL))
   }
   restore.point("navigate_to_modification_target")
-  #mod = mod_locate_target(mod, project_dir)
 
   tryCatch({
     target_file <- mod$meta$file_path
@@ -38,22 +37,25 @@ navigate_to_modification_target <- function(mod, project_dir = tryCatch(rstudioa
 
     rstudioapi::navigateToFile(target_file)
 
-    # For an insertion, end_line < start_line. We just set the cursor.
-    if (end_line < start_line) {
-      rstudioapi::setCursorPosition(rstudioapi::document_position(start_line, 1))
-    } else {
-      # For replacement, select the range.
-      original_lines <- readLines(target_file, warn = FALSE)
-      end_col <- if (end_line <= length(original_lines)) {
-        nchar(original_lines[end_line]) + 1
+    # Only attempt to select/position cursor if the location was found.
+    if (isTRUE(mod$meta$location_found)) {
+      # For an insertion, end_line < start_line. We just set the cursor.
+      if (end_line < start_line) {
+        rstudioapi::setCursorPosition(rstudioapi::document_position(start_line, 1))
       } else {
-        1
+        # For replacement, select the range.
+        original_lines <- readLines(target_file, warn = FALSE)
+        end_col <- if (end_line <= length(original_lines)) {
+          nchar(original_lines[end_line]) + 1
+        } else {
+          1
+        }
+        rng <- rstudioapi::document_range(
+                 rstudioapi::document_position(start_line, 1),
+                 rstudioapi::document_position(end_line, end_col)
+               )
+        rstudioapi::setSelectionRanges(list(rng))
       }
-      rng <- rstudioapi::document_range(
-               rstudioapi::document_position(start_line, 1),
-               rstudioapi::document_position(end_line, end_col)
-             )
-      rstudioapi::setSelectionRanges(list(rng))
     }
   }, error = function(e) {
     message("Info: Could not navigate/highlight target for '", mod$meta$file, "'. ", e$message)
@@ -105,8 +107,9 @@ review_modifications_addin <- function() {
   ui <- miniUI::miniPage(
     shiny::tags$head(shiny::tags$style(shiny::HTML("
       #info_ui p { white-space: pre-wrap; word-wrap: break-word; margin-bottom: 5px; }
-      .btn-container { margin-top: 2px; }
+      .btn-container { margin-top: 2px; margin-bottom: 8px; }
       .btn-container .btn { margin-right: 5px; }
+      #find_status_ui p { font-size: 0.9em; color: #555; margin: 0; padding: 0; }
     "))),
 
     miniUI::miniContentPanel(
@@ -116,6 +119,7 @@ review_modifications_addin <- function() {
           shiny::actionButton("apply", "Apply",  class = "btn-xs btn-primary"),
           shiny::actionButton("skip", "Skip",  class = "btn-xs"),
           shiny::actionButton("back", "Back", class = "btn-xs"),
+          shiny::actionButton("find_target", "Find", class = "btn-xs"),
           shiny::actionButton("insert_here", "Insert Here", class = "btn-xs"),
           shiny::actionButton("abort", "Cancel", class = "btn-xs")
         ),
@@ -127,6 +131,7 @@ review_modifications_addin <- function() {
       ),
       shiny::conditionalPanel(
         condition = "output.mods_in_progress == true",
+        shiny::uiOutput("find_status_ui"),
         shiny::uiOutput("info_ui")
       ),
       shiny::conditionalPanel(
@@ -154,15 +159,20 @@ review_modifications_addin <- function() {
       req(rv$current >= 1, rv$current <= rv$total)
       mod <- rv$mods[[rv$current]]
       # RELOCATE target, as previous edits might have changed line numbers
-      tryCatch({
-        rv$mods[[rv$current]] <- mod_locate_target(mod, project_dir)
+      updated_mod <- tryCatch({
+        mod_locate_target(mod, project_dir)
       }, error = function(e) {
          rstudioapi::showDialog("Relocation Error", paste("Could not re-locate target for", mod$meta$file, ":\n", e$message))
-         return()
+         # Ensure mod object is updated with error state
+         mod$meta$location_found <- FALSE
+         mod$meta$location_error <- e$message
+         return(mod)
       })
-      # Only navigate if the location was actually found
-      if (isTRUE(rv$mods[[rv$current]]$meta$location_found)) {
-        navigate_to_modification_target(rv$mods[[rv$current]])
+      rv$mods[[rv$current]] <- updated_mod
+
+      # Always navigate if a file path is available, even if location isn't found
+      if (!is.null(updated_mod$meta$file_path) && nzchar(updated_mod$meta$file_path)) {
+        navigate_to_modification_target(updated_mod)
       }
     }, ignoreInit = FALSE, ignoreNULL = TRUE) # Run on startup
 
@@ -170,6 +180,19 @@ review_modifications_addin <- function() {
       req(rv$current <= rv$total)
       mod <- rv$mods[[rv$current]]
       shiny::HTML(paste0("<h4>Modification ", rv$current, " of ", rv$total, "</h4>", mod_to_html_descr(mod)))
+    })
+
+    output$find_status_ui <- shiny::renderUI({
+      req(rv$current <= rv$total)
+      mod <- rv$mods[[rv$current]]
+      num_matches <- mod$meta$num_potential_locations %||% 0
+      if (num_matches > 1) {
+        shiny::tags$div(id="find_status_ui",
+          shiny::tags$p(paste0("Found ", num_matches, " potential matches. Showing match ", mod$meta$current_match_index, "."))
+        )
+      } else {
+        NULL
+      }
     })
 
 
@@ -214,6 +237,32 @@ review_modifications_addin <- function() {
       })
     })
 
+    observeEvent(input$find_target, {
+      mod <- rv$mods[[rv$current]]
+      num_matches <- mod$meta$num_potential_locations %||% 0
+
+      if (num_matches > 1) {
+        current_index <- mod$meta$current_match_index %||% 1
+        new_index <- (current_index %% num_matches) + 1
+        mod$meta$current_match_index <- new_index
+
+        new_loc <- mod$meta$potential_locations[[new_index]]
+        mod$meta$start_line <- new_loc$start
+        mod$meta$end_line <- new_loc$end
+        mod$meta$location_is_fuzzy <- new_loc$is_fuzzy
+
+        # This is a valid location, so ensure location_found is true
+        mod$meta$location_found <- TRUE
+
+        rv$mods[[rv$current]] <- mod
+        navigate_to_modification_target(mod)
+      } else if (num_matches == 1) {
+         rstudioapi::showDialog("Find", "Only one potential match was found.")
+      } else {
+         rstudioapi::showDialog("Find", "No alternative locations could be found for this modification.")
+      }
+    })
+
     observeEvent(input$insert_here, {
       mod <- rv$mods[[rv$current]]
       payload <- mod$payload
@@ -231,7 +280,10 @@ review_modifications_addin <- function() {
 
       log_msg <- paste0("INSERTED (manually): Change ", rv$current, " at cursor in '", basename(ctx$path), "'.")
       rv$log <- c(rv$log, log_msg)
-      # Do not advance current. User should inspect and then click skip.
+
+      # Advance to the next modification
+      Sys.sleep(0.5)
+      if (rv$current <= rv$total) rv$current <- rv$current + 1
     })
 
 
@@ -291,11 +343,20 @@ mod_to_html_descr = function(mod) {
   location_status_html <- ""
   if (!isTRUE(meta$location_found)) {
     err_msg <- meta$location_error %||% "Target location for modification could not be determined."
+
+    searched_for_str <- ""
+    if (meta$scope == "function" && !is.null(meta$function_name)) {
+      searched_for_str <- paste0("<b>Function name:</b> <code>", htmltools::htmlEscape(meta$function_name), "</code>")
+    } else if (meta$scope == "lines" && !is.null(meta$replace_lines)) {
+      searched_for_str <- paste0("<b>Lines to replace:</b><pre>", htmltools::htmlEscape(meta$replace_lines), "</pre>")
+    } else if (meta$scope == "lines" && !is.null(meta$insert_after_lines)) {
+      searched_for_str <- paste0("<b>Insert after lines:</b><pre>", htmltools::htmlEscape(meta$insert_after_lines), "</pre>")
+    }
+
     location_status_html <- paste0(
-      "<p style='color:red; font-weight:bold;'>Location not found: ",
-      htmltools::htmlEscape(err_msg),
-      "</p>",
-      "<p><i>This change will be skipped if you click 'Apply'. You can use 'Insert Here' to apply it manually at the cursor.</i></p>"
+      "<p style='color:red; font-weight:bold;'>Location not found: ", htmltools::htmlEscape(err_msg), "</p>",
+      "<p><i>'Apply' will skip this change. You can use 'Find' to search for fuzzy matches or 'Insert Here' to apply it manually at the cursor.</i></p>",
+       if (nzchar(searched_for_str)) paste0("<h5>Searched for:</h5>", searched_for_str) else ""
     )
   } else if (isTRUE(meta$location_is_fuzzy)) {
     location_status_html <- paste0(

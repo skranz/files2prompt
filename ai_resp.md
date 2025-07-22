@@ -1,493 +1,738 @@
-Of course. It's frustrating when things don't work as expected, and debugging JavaScript interaction can be tricky. Based on your feedback and the code you provided, I've identified the root cause of both the highlighting bug and the sluggishness. My previous attempts were on the right track but not robust enough.
+Hello! As an expert R programmer, I've reviewed your `files2prompt` package. It's a very clever and useful tool for integrating RStudio with LLMs. I've identified several areas for improvement, particularly in the "Apply Modifications" addin, to make it more robust and user-friendly, especially when the AI's proposed locations are ambiguous.
 
-The issue stems from repeatedly modifying the log file's HTML and then trying to clear it. Iterating through all logs to clear highlights is inefficient and was causing the sluggishness. The `unwrap()` method was not reliably restoring the text, which broke subsequent searches.
+Below is a description of the proposed improvements, followed by the specific code changes in the required `!MODIFICATION` format.
 
-I've rewritten the logic to be much more efficient and reliable. Here's the new approach:
+### Codebase Description and Proposed Improvements
 
-1.  **Efficient, Targeted Clearing:** Instead of searching the whole document for highlights to clear, the script now remembers the *one* log file that was last modified. When `clear_all_highlights` is called, it only restores that single log file to its original state. This is dramatically faster.
-2.  **State Caching:** The first time a number in a log is highlighted, the script saves a clean copy of that log's HTML. All future highlights in that log will start from this clean copy, preventing any issues from accumulated changes.
-3.  **Scrolling Fix:** The correct scrolling logic (checking if an element is already in view and scrolling to the top of the pane) has been properly integrated.
-4.  **Debugging Logs:** I've added `console.log` messages throughout the key functions. If you open your browser's developer tools (usually by pressing F12) and go to the "Console" tab, you will see a detailed trace of what happens when you click on a cell. This will be invaluable if any issues persist.
+The project is well-structured, with distinct responsibilities for parsing, locating, and applying modifications. The core logic for the two main addins, "Generate Prompt" and "Apply Modifications," is sound.
 
-As requested, I am providing the entire `inst/www/report_map.js` file with all the fixes and improvements.
+The main area for improvement is in the `mod_loc.R` and `mod_addin.R` files, which handle the process of finding where a modification should be applied and the user's interaction with this process. When an AI response specifies a location that has changed or is ambiguous, the current addin can fail to find the target, leaving the user without much recourse.
 
-!MODIFICATION report_map.js
+My proposed changes address this by:
+
+1.  **Improving Target Location Robustness:** The logic for finding functions (`locate_scope_function`) and line sequences (`find_line_sequence`) has been enhanced to return *all* potential matches (including fuzzy matches), not just the first or best one. This allows the user to cycle through possibilities.
+2.  **Introducing a "Find" Button:** A new "Find" button is added to the "Apply Modifications" addin UI. If multiple potential locations are found for a change, this button lets the user cycle through them. If no location was found initially, clicking "Find" can still be useful if the underlying find logic identifies a fuzzy match.
+3.  **Enhancing the User Interface:**
+    *   The addin now always navigates to the target file, even if the specific lines or function can't be located, allowing for manual inspection.
+    *   When a location isn't found, the UI now clearly displays what was being searched for (e.g., the function name or the specific lines of code).
+    *   When multiple matches are found, the UI displays a status like "Match 1 of 3" to provide context.
+4.  **Improving "Insert Here" Workflow:** After using the "Insert Here" button, the addin will now automatically proceed to the next modification, streamlining the review process, just as if "Apply" had been clicked.
+
+These changes will make the modification review process smoother and more powerful, gracefully handling cases where the AI's context is slightly out of date.
+
+Here are the code modifications:
+
+!MODIFICATION R/mod_addin.R
 scope = "file"
-file = "inst/www/report_map.js"
+file = "R/mod_addin.R"
 is_new_file = false
-description = '''Rewrite the entire JS file to fix number highlighting and performance issues. This version uses a robust state-caching mechanism for log content, implements targeted highlight clearing for better performance, fixes scrolling behavior, and adds extensive console logging for easier debugging.'''
+description = '''Updates the "Apply Modifications" addin UI and server logic.
+
+- Adds a "Find" button and status text to the UI.
+- Changes the "Insert Here" button to automatically advance to the next modification.
+- Modifies the server logic to always navigate to the target file, even if the exact location is not found.
+- Implements the "Find" button logic to cycle through potential matches.
+- Enhances the description (`mod_to_html_descr`) to show what was searched for when a location is not found.
+'''
 ---
-```javascript
-// FILE: report_map.js
+```r
+# FILE: R/mod_addin.R
+#' @importFrom shiny fluidPage verbatimTextOutput actionButton observeEvent
+#' @importFrom shiny reactiveValues renderPrint shinyApp stopApp isolate runGadget
+#' @importFrom shiny uiOutput renderUI tagList h4 tags conditionalPanel reactive outputOptions req
+#' @importFrom miniUI miniPage gadgetTitleBar miniContentPanel miniTitleBarButton
+#' @keywords internal
 
-// Global variables set by the R backend
-// var data_is_embedded = true;
-// var all_maps = { ... }; // Populated if data_is_embedded is true
-// var report_manifest = { ... }; // Populated if data_is_embedded is false
-// var cell_conflict_data = { ... }; // Populated with pre-computed conflict info
+#' Navigate to a modification target in RStudio and select/highlight
+#'
+#' This function takes a *located* modification object and uses `rstudioapi`
+#' to navigate to the file and select the relevant code range.
+#'
+#' @param mod A single parsed and *located* modification object. It must
+#'   contain `mod$meta$file_path`, `start_line`, and `end_line`.
+#' @keywords internal
+navigate_to_modification_target <- function(mod, project_dir = tryCatch(rstudioapi::getActiveProject(), error = function(e) getwd())) {
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+    return(invisible(NULL))
+  }
+  restore.point("navigate_to_modification_target")
 
-var active_map_type = "";
-var active_version = "";
-var active_mapping = {};
+  tryCatch({
+    target_file <- mod$meta$file_path
+    start_line <- mod$meta$start_line
+    end_line <- mod$meta$end_line
 
-var last_code_highlight = "";
-var last_cell_highlights = [];
-
-// Globals for robust and performant number highlighting
-var original_log_htmls = {}; // Cache for pristine log HTML, keyed by the log <pre> element's ID.
-var last_highlighted_log_id = null; // ID of the last log <pre> element that was modified.
-
-function clear_all_highlights() {
-    console.log("Clearing all highlights...");
-
-    // Clear code line highlight
-    if (last_code_highlight) {
-        $(last_code_highlight).removeClass("code-highlight");
-        last_code_highlight = "";
+    if (is.null(target_file)) {
+      return(invisible(NULL))
     }
 
-    // Clear table cell highlights
-    last_cell_highlights.forEach(function(id) {
-        $(id).removeClass("cell-highlight");
-    });
-    last_cell_highlights = [];
+    # If the file doesn't exist, it must be a new file modification.
+    # We create it here so the user sees it appear and we can navigate to it.
+    if (!file.exists(target_file)) {
+      dir.create(dirname(target_file), showWarnings = FALSE, recursive = TRUE)
+      file.create(target_file)
+    }
 
-    // Clear highlights from discrepancy report clicks
-    $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
+    rstudioapi::navigateToFile(target_file)
 
-    // --- NEW EFFICIENT LOG CLEARING ---
-    // Instead of searching the whole DOM, we only restore the single log that was last changed.
-    if (last_highlighted_log_id && original_log_htmls[last_highlighted_log_id]) {
-        const log_code_element = $("#" + last_highlighted_log_id).find('.logtxt-code');
-        if (log_code_element.length > 0) {
-            log_code_element.html(original_log_htmls[last_highlighted_log_id]);
-            console.log("Restored original HTML for log #" + last_highlighted_log_id);
+    # Only attempt to select/position cursor if the location was found.
+    if (isTRUE(mod$meta$location_found)) {
+      # For an insertion, end_line < start_line. We just set the cursor.
+      if (end_line < start_line) {
+        rstudioapi::setCursorPosition(rstudioapi::document_position(start_line, 1))
+      } else {
+        # For replacement, select the range.
+        original_lines <- readLines(target_file, warn = FALSE)
+        end_col <- if (end_line <= length(original_lines)) {
+          nchar(original_lines[end_line]) + 1
+        } else {
+          1
         }
+        rng <- rstudioapi::document_range(
+                 rstudioapi::document_position(start_line, 1),
+                 rstudioapi::document_position(end_line, end_col)
+               )
+        rstudioapi::setSelectionRanges(list(rng))
+      }
     }
-    last_highlighted_log_id = null;
+  }, error = function(e) {
+    message("Info: Could not navigate/highlight target for '", mod$meta$file, "'. ", e$message)
+  })
+
+  invisible(NULL)
 }
 
-// New helper function to find and highlight a number in a log output
-function highlight_number_in_log(log_element, raw_number_str) {
-    const log_id = log_element.attr('id');
-    console.log("Attempting to highlight number '" + raw_number_str + "' in log #" + log_id);
+review_modifications_addin <- function() {
+  if (!requireNamespace("shiny", quietly = TRUE) || !requireNamespace("miniUI", quietly = TRUE)) {
+    stop("The 'shiny' and 'miniUI' packages are required for this addin.")
+  }
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable()) {
+      stop("This addin requires RStudio version 1.2 or higher.")
+  }
+  library(files2prompt)
 
-    let number_str = String(raw_number_str).trim();
-    let cleaned_str = number_str.replace(/[(),*]/g, '');
-    let target_num = parseFloat(cleaned_str);
+  # --- 1. PRE-PROCESSING (before UI) ---
+  project_dir <- tryCatch(rstudioapi::getActiveProject(), error = function(e) getwd())
+  restore.point("review_modifications_addin")
+  response_file <- find_ai_response_file()
+  raw_text <- paste(readLines(response_file, warn = FALSE), collapse = "\n")
 
-    if (isNaN(target_num)) {
-        console.warn("Could not parse number from cell content:", raw_number_str);
-        return;
+  # 1a. Parse all mods, now without stopping on TOML errors
+  mod_list <- parse_ai_response(raw_text)
+  if (length(mod_list) == 0) {
+    message("No valid modifications found in '", basename(response_file), "'.")
+    return(invisible())
+  }
+
+  # 1b. Locate all mods, now without stopping on failure
+  cat("Locating all modification targets...\n")
+  located_mod_list <- lapply(mod_list, function(mod) {
+    # mod_locate_target now adds error info to the mod object instead of stopping
+    mod_locate_target(mod, project_dir)
+  })
+  # Report any location failures
+  location_failures <- Filter(function(m) !isTRUE(m$meta$location_found), located_mod_list)
+  if (length(location_failures) > 0) {
+      cat("\nWarning: Could not locate targets for", length(location_failures), "modification(s):\n")
+      for (mod in location_failures) {
+          cat(" - File:", mod$meta$file, "| Error:", mod$meta$location_error %||% "Unknown reason", "\n")
+      }
+  }
+  cat("Target location phase complete.\n")
+
+
+  # --- 2. Define the Shiny Gadget UI ---
+  ui <- miniUI::miniPage(
+    shiny::tags$head(shiny::tags$style(shiny::HTML("
+      #info_ui p { white-space: pre-wrap; word-wrap: break-word; margin-bottom: 5px; }
+      .btn-container { margin-top: 2px; margin-bottom: 8px; }
+      .btn-container .btn { margin-right: 5px; }
+      #find_status_ui p { font-size: 0.9em; color: #555; margin: 0; padding: 0; }
+    "))),
+
+    miniUI::miniContentPanel(
+      shiny::div(class = "btn-container",
+        shiny::conditionalPanel(
+          condition = "output.mods_in_progress == true",
+          shiny::actionButton("apply", "Apply",  class = "btn-xs btn-primary"),
+          shiny::actionButton("skip", "Skip",  class = "btn-xs"),
+          shiny::actionButton("back", "Back", class = "btn-xs"),
+          shiny::actionButton("find_target", "Find", class = "btn-xs"),
+          shiny::actionButton("insert_here", "Insert Here", class = "btn-xs"),
+          shiny::actionButton("abort", "Cancel", class = "btn-xs")
+        ),
+        shiny::conditionalPanel(
+          condition = "output.mods_in_progress == false",
+          shiny::actionButton("back_from_finish", "Back", class = "btn-xs"),
+          shiny::actionButton("finish", "Finish", class = "btn-primary")
+        )
+      ),
+      shiny::conditionalPanel(
+        condition = "output.mods_in_progress == true",
+        shiny::uiOutput("find_status_ui"),
+        shiny::uiOutput("info_ui")
+      ),
+      shiny::conditionalPanel(
+        condition = "output.mods_in_progress == false",
+        shiny::h4("All modifications processed."),
+        shiny::h5("Log of actions:"),
+        shiny::verbatimTextOutput("final_log")
+      )
+    )
+  )
+
+  # --- 3. Define the Shiny Server Logic ---
+  server <- function(input, output, session) {
+    rv <- shiny::reactiveValues(
+      mods = located_mod_list,
+      current = 1,
+      total = length(located_mod_list),
+      log = character(0)
+    )
+
+    output$mods_in_progress <- shiny::reactive({ rv$current <= rv$total })
+    shiny::outputOptions(output, "mods_in_progress", suspendWhenHidden = FALSE)
+
+    observeEvent(rv$current, {
+      req(rv$current >= 1, rv$current <= rv$total)
+      mod <- rv$mods[[rv$current]]
+      # RELOCATE target, as previous edits might have changed line numbers
+      updated_mod <- tryCatch({
+        mod_locate_target(mod, project_dir)
+      }, error = function(e) {
+         rstudioapi::showDialog("Relocation Error", paste("Could not re-locate target for", mod$meta$file, ":\n", e$message))
+         # Ensure mod object is updated with error state
+         mod$meta$location_found <- FALSE
+         mod$meta$location_error <- e$message
+         return(mod)
+      })
+      rv$mods[[rv$current]] <- updated_mod
+
+      # Always navigate if a file path is available, even if location isn't found
+      if (!is.null(updated_mod$meta$file_path) && nzchar(updated_mod$meta$file_path)) {
+        navigate_to_modification_target(updated_mod)
+      }
+    }, ignoreInit = FALSE, ignoreNULL = TRUE) # Run on startup
+
+    output$info_ui <- shiny::renderUI({
+      req(rv$current <= rv$total)
+      mod <- rv$mods[[rv$current]]
+      shiny::HTML(paste0("<h4>Modification ", rv$current, " of ", rv$total, "</h4>", mod_to_html_descr(mod)))
+    })
+
+    output$find_status_ui <- shiny::renderUI({
+      req(rv$current <= rv$total)
+      mod <- rv$mods[[rv$current]]
+      num_matches <- mod$meta$num_potential_locations %||% 0
+      if (num_matches > 1) {
+        shiny::tags$div(id="find_status_ui",
+          shiny::tags$p(paste0("Found ", num_matches, " potential matches. Showing match ", mod$meta$current_match_index, "."))
+        )
+      } else {
+        NULL
+      }
+    })
+
+
+    output$final_log <- shiny::renderPrint({ cat(paste(rv$log, collapse="\n")) })
+
+    observeEvent(input$apply, {
+      mod <- rv$mods[[rv$current]]
+
+      # If location was not found (which includes parse errors), treat as a skip.
+      if (!isTRUE(mod$meta$location_found)) {
+        reason <- mod$meta$location_error %||% "location not found"
+        rv$log <- c(rv$log, paste0("SKIPPED (", reason, "): Change ", rv$current, " for '", mod$meta$file, "'."))
+        if (rv$current <= rv$total) rv$current <- rv$current + 1
+        return()
+      }
+
+      tryCatch({
+        apply_modification_via_api(mod)
+        meta <- mod$meta
+        location_desc <- if(meta$end_line < meta$start_line) {
+            paste("insertion at line", meta$start_line)
+        } else {
+            paste("replacement at lines", meta$start_line, "to", meta$end_line)
+        }
+
+        scope_desc <- if (meta$scope == "function") {
+          fun_name <- meta$function_name %||% meta$insert_after_fun %||% meta$insert_before_fun %||% "(unnamed)"
+          paste0("function '", fun_name, "'")
+        } else {
+          meta$scope
+        }
+
+        log_msg <- paste0("APPLIED: Change ", rv$current, " (", scope_desc, ") in '", meta$file, "' (", location_desc, ").")
+        rv$log <- c(rv$log, log_msg)
+
+        Sys.sleep(0.5)
+        if (rv$current <= rv$total) rv$current <- rv$current + 1
+      }, error = function(e) {
+        msg <- paste("ERROR applying Change", rv$current, "to", mod$meta$file, ":", e$message)
+        rv$log <- c(rv$log, msg)
+        rstudioapi::showDialog("Error Applying Change", e$message)
+      })
+    })
+
+    observeEvent(input$find_target, {
+      mod <- rv$mods[[rv$current]]
+      num_matches <- mod$meta$num_potential_locations %||% 0
+
+      if (num_matches > 1) {
+        current_index <- mod$meta$current_match_index %||% 1
+        new_index <- (current_index %% num_matches) + 1
+        mod$meta$current_match_index <- new_index
+
+        new_loc <- mod$meta$potential_locations[[new_index]]
+        mod$meta$start_line <- new_loc$start
+        mod$meta$end_line <- new_loc$end
+        mod$meta$location_is_fuzzy <- new_loc$is_fuzzy
+        
+        # This is a valid location, so ensure location_found is true
+        mod$meta$location_found <- TRUE
+
+        rv$mods[[rv$current]] <- mod
+        navigate_to_modification_target(mod)
+      } else if (num_matches == 1) {
+         rstudioapi::showDialog("Find", "Only one potential match was found.")
+      } else {
+         rstudioapi::showDialog("Find", "No alternative locations could be found for this modification.")
+      }
+    })
+
+    observeEvent(input$insert_here, {
+      mod <- rv$mods[[rv$current]]
+      payload <- mod$payload
+      ctx <- tryCatch(rstudioapi::getSourceEditorContext(), error = function(e) NULL)
+
+      if (is.null(ctx) || is.null(ctx$id) || !nzchar(ctx$path)) {
+        msg <- "Could not get RStudio editor context. Please make sure a file is open and active."
+        rstudioapi::showDialog("Error", msg)
+        rv$log <- c(rv$log, paste("INSERT FAILED (no context): Change", rv$current))
+        return()
+      }
+      # insertText uses the current selection(s) to insert or replace
+      rstudioapi::insertText(text = payload, id = ctx$id)
+      rstudioapi::documentSave(id = ctx$id)
+
+      log_msg <- paste0("INSERTED (manually): Change ", rv$current, " at cursor in '", basename(ctx$path), "'.")
+      rv$log <- c(rv$log, log_msg)
+
+      # Advance to the next modification
+      Sys.sleep(0.5)
+      if (rv$current <= rv$total) rv$current <- rv$current + 1
+    })
+
+
+    observeEvent(input$skip, {
+      mod <- rv$mods[[rv$current]]
+      rv$log <- c(rv$log, paste0("SKIPPED: Change ", rv$current, " (", mod$meta$scope, ") on '", mod$meta$file, "'."))
+      if (rv$current <= rv$total) rv$current <- rv$current + 1
+    })
+
+    observeEvent(input$back, {
+      if (rv$current > 1) rv$current <- rv$current - 1
+    })
+
+    observeEvent(input$back_from_finish, {
+      if (rv$total > 0) rv$current <- rv$total
+    })
+
+
+    observeEvent(input$abort, { shiny::stopApp(invisible(rv$log)) })
+    observeEvent(input$finish, { shiny::stopApp(invisible(rv$log)) })
+  }
+
+  cat("Starting modification review tool...\n")
+  shiny::runGadget(ui, server, viewer = shiny::paneViewer(minHeight = "maximize"))
+}
+mod_meta_add_info = function(meta) {
+  if (any(startsWith(names(meta), "insert"))) {
+    meta$is_insert = TRUE
+  } else {
+    meta$is_insert = FALSE
+  }
+  meta
+}
+
+mod_to_html_descr = function(mod) {
+  restore.point("mod_to_html_descr")
+  meta = mod_meta_add_info(mod$meta)
+
+  # Handle TOML parse error first
+  if (isTRUE(meta$parse_error)) {
+    error_html <- paste0(
+      "<p style='color:red; font-weight:bold;'>Metadata Parsing Error: ",
+      htmltools::htmlEscape(meta$parse_error_message %||% "Unknown error"),
+      "</p>",
+      "<p><i>The metadata for this block could not be read. 'Apply' will skip this change. You can use 'Insert Here' to apply the payload manually at the cursor.</i></p>",
+      "<h5>Original Metadata Block:</h5>",
+      "<pre>", htmltools::htmlEscape(meta$raw_toml %||% ""), "</pre>"
+    )
+    payload_html <- paste0(
+      "<h5>Payload:</h5>",
+      "<pre>", htmltools::htmlEscape(mod$payload), "</pre>"
+    )
+    return(paste0(error_html, payload_html))
+  }
+
+
+  location_status_html <- ""
+  if (!isTRUE(meta$location_found)) {
+    err_msg <- meta$location_error %||% "Target location for modification could not be determined."
+    
+    searched_for_str <- ""
+    if (meta$scope == "function" && !is.null(meta$function_name)) {
+      searched_for_str <- paste0("<b>Function name:</b> <code>", htmltools::htmlEscape(meta$function_name), "</code>")
+    } else if (meta$scope == "lines" && !is.null(meta$replace_lines)) {
+      searched_for_str <- paste0("<b>Lines to replace:</b><pre>", htmltools::htmlEscape(meta$replace_lines), "</pre>")
+    } else if (meta$scope == "lines" && !is.null(meta$insert_after_lines)) {
+      searched_for_str <- paste0("<b>Insert after lines:</b><pre>", htmltools::htmlEscape(meta$insert_after_lines), "</pre>")
     }
 
-    const for_decimal_places = number_str.replace(/[^\d.]/g, '');
-    const decimal_places = (for_decimal_places.split('.')[1] || '').length;
+    location_status_html <- paste0(
+      "<p style='color:red; font-weight:bold;'>Location not found: ", htmltools::htmlEscape(err_msg), "</p>",
+      "<p><i>'Apply' will skip this change. You can use 'Find' to search for fuzzy matches or 'Insert Here' to apply it manually at the cursor.</i></p>",
+       if (nzchar(searched_for_str)) paste0("<h5>Searched for:</h5>", searched_for_str) else ""
+    )
+  } else if (isTRUE(meta$location_is_fuzzy)) {
+    location_status_html <- paste0(
+      "<p style='color:orange; font-weight:bold;'>Note: The target location is an approximate match.",
+      " Please review the highlighted code in the editor carefully before applying.</p>"
+    )
+  }
 
-    const log_code_element = log_element.find('.logtxt-code');
-    if (log_code_element.length === 0) return;
+  descr_str <- ""
+  if (meta$scope=="function" && meta$is_insert) {
+    descr_str <- paste0("Add function to <i>", htmltools::htmlEscape(meta$file),"</i>")
+  } else if (meta$scope=="function" && !meta$is_insert) {
+    descr_str <- paste0("Replace function <code>", htmltools::htmlEscape(meta[["function_name"]]), "</code> in <i>", htmltools::htmlEscape(meta$file), "</i>")
+  } else if (meta$scope=="file") {
+    descr_str <- paste0("Write complete file <i>", htmltools::htmlEscape(meta$file), "</i>")
+  } else if (meta$scope=="lines") {
+    descr_str <- paste0("Modify lines in <i>", htmltools::htmlEscape(meta$file), "</i>")
+  }
 
-    // --- NEW ROBUST HIGHLIGHTING LOGIC ---
-    // 1. If we haven't already, cache the original, unmodified HTML of the log.
-    if (!original_log_htmls[log_id]) {
-        original_log_htmls[log_id] = log_code_element.html();
-        console.log("Cached original HTML for log #" + log_id);
+  description_html <- paste0(
+    "<h5>", descr_str, "</h5>",
+    "<p><b>Description:</b> ", htmltools::htmlEscape(meta$description), "</p>"
+  )
+
+  payload_html <- paste0(
+    "<h5>Proposed Change:</h5>",
+    "<pre>", htmltools::htmlEscape(mod$payload), "</pre>"
+  )
+
+  paste0(location_status_html, description_html, payload_html)
+}
+```
+!END_MODIFICATION R/mod_addin.R
+!MODIFICATION R/mod_loc.R
+scope = "file"
+file = "R/mod_loc.R"
+is_new_file = false
+description = '''This change refactors the location-finding logic to be more robust and to support finding multiple potential matches.
+
+- `mod_locate_target` is updated to orchestrate the new logic, populating the `mod$meta` object with a list of all potential locations.
+- `locate_scope_function` now searches for functions by name, with a fallback to fuzzy matching if no exact match is found. It returns all plausible locations.
+- `locate_scope_lines` is updated to use the new `find_line_sequence` and handle a list of returned locations.
+- `find_line_sequence` is significantly improved. It now returns a list of all possible matches (both exact and approximate), sorted by quality, instead of just the first one or NULL. This enables the "Find" button's cycling behavior in the addin.
+'''
+---
+```r
+#' Locate the target for a modification
+#'
+#' This is the main dispatcher function. It takes a `mod` object, finds its
+#' full file path, and determines the exact start and end lines for the edit.
+#' It populates `mod$meta` with `file_path`, `start_line`, `end_line`, and
+#' several status fields: `location_found`, `location_is_fuzzy`, `location_error`.
+#' It also populates `potential_locations` for the "Find" functionality.
+#'
+#' @param mod A single parsed modification object.
+#' @param project_dir The root directory of the project.
+#' @return The modified `mod` object with location information.
+mod_locate_target <- function(mod, project_dir) {
+  restore.point("mod_locate_target")
+
+  # Handle case where TOML parsing failed upstream
+  if (isTRUE(mod$meta$parse_error)) {
+    mod$meta$location_found <- FALSE
+    mod$meta$location_is_fuzzy <- FALSE
+    mod$meta$location_error <- mod$meta$parse_error_message %||% "TOML metadata could not be parsed."
+    mod$meta$start_line <- 1
+    mod$meta$end_line <- 0
+    return(mod)
+  }
+
+  scope <- mod$meta$scope
+
+  # Initialize meta fields for location status
+  mod$meta$location_found <- FALSE
+  mod$meta$location_is_fuzzy <- FALSE
+  mod$meta$location_error <- NULL
+  mod$meta$potential_locations <- list()
+  mod$meta$num_potential_locations <- 0
+  mod$meta$current_match_index <- 0
+
+
+  # 1. Find target file
+  target_file <- find_project_file(mod$meta$file, project_dir)
+  is_new <- is.null(target_file)
+
+  if (is_new && !isTRUE(mod$meta$is_new_file)) {
+    mod$meta$location_error <- paste0("Could not find file '", mod$meta$file, "' and it's not marked as a new file.")
+    mod$meta$start_line <- 1
+    mod$meta$end_line <- 0
+    return(mod)
+  }
+  if (!is_new && isTRUE(mod$meta$is_new_file)) {
+    warning("File '", mod$meta$file, "' already exists but is_new_file is true. It may be overwritten.")
+  }
+  if (is_new) {
+    target_file <- file.path(project_dir, mod$meta$file)
+  }
+  mod$meta$file_path <- target_file
+
+  # 2. Dispatch to find lines based on scope
+  loc_result <- switch(scope,
+    "file" = locate_scope_file(mod),
+    "function" = locate_scope_function(mod),
+    "lines" = locate_scope_lines(mod),
+    list(locations = list(),
+         error_msg = paste("Unknown modification scope:", scope))
+  )
+
+  # 3. Process the location results
+  mod$meta$potential_locations <- loc_result$locations
+  mod$meta$num_potential_locations <- length(loc_result$locations)
+
+  if (mod$meta$num_potential_locations > 0) {
+    mod$meta$location_found <- TRUE
+    mod$meta$current_match_index <- 1
+    first_loc <- loc_result$locations[[1]]
+    mod$meta$start_line <- first_loc$start
+    mod$meta$end_line <- first_loc$end
+    mod$meta$location_is_fuzzy <- first_loc$is_fuzzy
+    mod$meta$location_error <- NULL
+  } else {
+    mod$meta$location_found <- FALSE
+    mod$meta$start_line <- 1
+    mod$meta$end_line <- 0
+    mod$meta$location_error <- loc_result$error_msg
+  }
+
+  mod
+}
+
+
+# --- Scope-specific Location Finders ---
+
+locate_scope_file <- function(mod) {
+  restore.point("locate_scope_file")
+  # For `scope="file"`, we replace the whole file.
+  if (!file.exists(mod$meta$file_path)) { # New file
+    loc <- list(start = 1, end = 0, found = TRUE, is_fuzzy = FALSE)
+  } else {
+    line_count <- length(readLines(mod$meta$file_path, warn = FALSE))
+    loc <- list(start = 1, end = line_count, found = TRUE, is_fuzzy = FALSE)
+  }
+  list(locations = list(loc), error_msg = NULL)
+}
+
+locate_scope_function <- function(mod) {
+  restore.point("locate_scope_function")
+  target_file <- mod$meta$file_path
+  if (!file.exists(target_file)) {
+    return(list(locations = list(),
+                error_msg = paste0("File '", basename(target_file), "' does not exist.")))
+  }
+  original_lines <- readLines(target_file, warn = FALSE)
+  all_funs <- f2p_all_fun_locs(target_file)
+  meta = mod$meta
+
+  if ("insert_top" %in% names(meta)) {
+    return(list(locations = list(list(start = 1, end = 0, is_fuzzy = FALSE)), error_msg = NULL))
+  } else if ("insert_bottom" %in% names(meta)) {
+    n_lines <- NROW(original_lines)
+    return(list(locations = list(list(start = n_lines + 1, end = n_lines, is_fuzzy = FALSE)), error_msg = NULL))
+  }
+
+  fun_name = meta$function_name %||% meta$insert_after_fun %||% meta$insert_before_fun
+  if (is.null(fun_name)) {
+      return(list(locations = list(),
+                  error_msg = "No function name specified for replacement or relative insertion."))
+  }
+
+  # Find exact matches
+  locs <- all_funs[all_funs$fun_name == fun_name, ]
+  
+  # If no exact match, try fuzzy matching
+  is_fuzzy_match <- FALSE
+  if (nrow(locs) == 0) {
+      fuzzy_matches <- agrep(fun_name, all_funs$fun_name, max.distance = 0.2, value = TRUE)
+      if (length(fuzzy_matches) > 0) {
+          locs <- all_funs[all_funs$fun_name %in% fuzzy_matches, ]
+          is_fuzzy_match <- TRUE
+      }
+  }
+
+  if (NROW(locs) == 0) {
+    return(list(locations = list(),
+                error_msg = paste0("Function '", fun_name, "' not found in '", basename(target_file), "'.")))
+  }
+
+  # Convert data.frame rows to a list of location objects
+  potential_locations <- lapply(seq_len(nrow(locs)), function(i) {
+    loc <- locs[i, ]
+    if ("insert_after_fun" %in% names(meta)) {
+      list(start = loc$end_line_fun + 1, end = loc$end_line_fun, is_fuzzy = is_fuzzy_match)
+    } else if ("insert_before_fun" %in% names(meta)) {
+      list(start = loc$start_line_comment, end = loc$start_line_comment - 1, is_fuzzy = is_fuzzy_match)
+    } else {
+      # It's a function replacement.
+      has_roxygen_comments <- any(grepl("^\\s*#'", strsplit(mod$payload, "\n")[[1]]))
+      start_replace_line <- if (has_roxygen_comments) loc$start_line_comment else loc$start_line_fun
+      list(start = start_replace_line, end = loc$end_line_fun, is_fuzzy = is_fuzzy_match)
+    }
+  })
+
+  list(locations = potential_locations, error_msg = NULL)
+}
+
+locate_scope_lines <- function(mod) {
+  target_file <- mod$meta$file_path
+  if (!file.exists(target_file)) {
+    return(list(locations = list(),
+                error_msg = paste0("File '", basename(target_file), "' does not exist.")))
+  }
+  original_lines <- readLines(target_file, warn = FALSE)
+  meta <- mod$meta
+  
+  # --- Insertion based on line content ---
+  if (!is.null(meta$insert_after_lines) || !is.null(meta$replace_lines)) {
+    sequence_to_find <- strsplit(meta$replace_lines %||% meta$insert_after_lines, "\n")[[1]]
+    
+    locations <- find_line_sequence(original_lines, sequence_to_find, approximate = TRUE)
+
+    if (length(locations) == 0) {
+      err_key <- if (!is.null(meta$replace_lines)) "replace_lines" else "insert_after_lines"
+      return(list(locations = list(),
+                  error_msg = paste0("Could not find the '", err_key, "' sequence in '", basename(target_file), "'.")))
     }
     
-    // 2. Always start the search from the pristine, original HTML.
-    const log_html = original_log_htmls[log_id];
-
-    const number_regex = /-?\d*\.?\d+/g;
-    let best_match = null;
-    let min_diff = Infinity;
-
-    let match;
-    while ((match = number_regex.exec(log_html)) !== null) {
-        const num_in_log_str = match[0];
-        if (num_in_log_str === '.' || num_in_log_str === '-') continue;
-
-        const num_in_log = parseFloat(num_in_log_str);
-        if (isNaN(num_in_log)) continue;
-
-        const scale = Math.pow(10, decimal_places);
-        const rounded_log_num = Math.round(num_in_log * scale) / scale;
-        const rounded_target_num = Math.round(target_num * scale) / scale;
-
-        if (rounded_log_num === rounded_target_num) {
-            const diff = Math.abs(num_in_log - target_num);
-            if (diff < min_diff) {
-                min_diff = diff;
-                best_match = match;
-            }
-        }
+    # If it's an insertion, adjust the location
+    if (!is.null(meta$insert_after_lines)) {
+        locations <- lapply(locations, function(loc) {
+            loc$start <- loc$end + 1
+            loc$end <- loc$end
+            loc
+        })
     }
+    return(list(locations = locations, error_msg = NULL))
+  }
+  
+  # --- Insertion based on position (top, bottom, after_fun) ---
+  is_fuzzy <- FALSE
+  res <- tryCatch({
+    all_funs <- if (grepl("\\.R$", target_file, ignore.case = TRUE)) f2p_all_fun_locs(target_file) else NULL
+    get_insertion_line(meta, original_lines, all_funs)
+  }, error = function(e) e)
 
-    if (best_match) {
-        console.log("Found best match:", best_match[0], "at index", best_match.index);
-        const original_text = best_match[0];
-        const new_html = log_html.substring(0, best_match.index) +
-                         '<span class="number-highlight">' + original_text + '</span>' +
-                         log_html.substring(best_match.index + original_text.length);
-        log_code_element.html(new_html);
-        last_highlighted_log_id = log_id; // Remember which log we modified.
-    } else {
-        console.log("No matching number found in log #" + log_id);
-        log_code_element.html(log_html); // Restore original if no match found
+  if (inherits(res, "error")) {
+    return(list(locations = list(), error_msg = res$message))
+  }
+  insert_line <- res
+  
+  final_loc <- list(start = insert_line, end = insert_line - 1, is_fuzzy = is_fuzzy)
+  return(list(locations = list(final_loc), error_msg = NULL))
+}
+
+
+# --- Location Helpers ---
+
+get_insertion_line <- function(meta, lines, fun_locs) {
+  if (isTRUE(meta$insert_top)) return(1)
+  if (isTRUE(meta$insert_bottom)) return(length(lines) + 1)
+
+  fun_name <- meta$insert_after_fun %||% meta$insert_before_fun
+  if (is.null(fun_name)) {
+    # No function-based insertion, default to bottom of file
+    return(length(lines) + 1)
+  }
+
+  # If fun_locs is NULL (e.g. not an R file) or empty, we can't find the function.
+  if (is.null(fun_locs) || nrow(fun_locs) == 0) {
+    stop("Cannot locate functions for insertion because no functions were found in '", meta$file, "'.")
+  }
+
+  loc <- fun_locs[fun_locs$fun_name == fun_name, ]
+  if (nrow(loc) == 0) {
+    stop("Function '", fun_name, "' not found in '", meta$file, "' for insertion.")
+  }
+
+  if (!is.null(meta$insert_after_fun)) {
+    return(loc$end_line_fun[1] + 1)
+  }
+  if (!is.null(meta$insert_before_fun)) {
+    # Insert before the function's preceding comment block
+    return(loc$start_line_comment[1])
+  }
+
+  # Fallback: default to bottom of the file if no other criteria match
+  return(length(lines) + 1)
+}
+
+find_line_sequence <- function(source_lines, sequence_to_find, approximate = FALSE, max_dist = 0.2) {
+  if (length(sequence_to_find) == 0) return(list())
+  len_seq <- length(sequence_to_find)
+  len_src <- length(source_lines)
+  if (len_seq > len_src) return(list())
+
+  # 1. Find all exact matches
+  exact_matches <- list()
+  for (i in 1:(len_src - len_seq + 1)) {
+    chunk <- source_lines[i:(i + len_seq - 1)]
+    if (all(chunk == sequence_to_find)) {
+      exact_matches[[length(exact_matches) + 1]] <- list(start = i, end = i + len_seq - 1, is_fuzzy = FALSE, dist = 0)
     }
-}
+  }
+  if (length(exact_matches) > 0) {
+    return(exact_matches)
+  }
 
-function clear_static_coloring() {
-    $(".statically-colored").each(function() {
-        this.style.removeProperty('background-color');
-        $(this).removeClass("statically-colored");
-    });
-}
+  # 2. If no exact match and approximate is false, return empty list
+  if (!approximate) return(list())
 
-function is_in_viewport(element) {
-    if (!element) return false;
-    const container = element.closest('.tab-content');
-    if (!container) return false;
-
-    const containerRect = container.getBoundingClientRect();
-    const elementRect = element.getBoundingClientRect();
-
-    return (
-        elementRect.top >= containerRect.top &&
-        elementRect.bottom <= containerRect.bottom
-    );
-}
-
-function apply_static_coloring(mapping) {
-    clear_static_coloring();
-    if (!mapping || !mapping.reg_info) return;
-
-    const reg_info = mapping.reg_info;
-    for (const reg_ind in reg_info) {
-        if (reg_info.hasOwnProperty(reg_ind)) {
-            const info = reg_info[reg_ind];
-            if (info.color && info.cell_ids) {
-                const cell_ids = info.cell_ids.split(',');
-                cell_ids.forEach(id => {
-                    const cell_selector = "#" + id.trim();
-                    const element = $(cell_selector);
-                    if (element.length > 0) {
-                        element[0].style.setProperty('background-color', info.color, 'important');
-                        element.addClass('statically-colored');
-                    }
-                });
-            }
-        }
+  # 3. Find all approximate matches
+  seq_str <- paste(sequence_to_find, collapse = "\n")
+  all_matches <- list()
+  for (i in 1:(len_src - len_seq + 1)) {
+    chunk_lines <- source_lines[i:(i + len_seq - 1)]
+    chunk_str <- paste(chunk_lines, collapse = "\n")
+    dist <- utils::adist(seq_str, chunk_str, ignore.case = TRUE, costs = 1)[1, 1]
+    
+    normalized_dist <- dist / nchar(seq_str)
+    if (is.finite(normalized_dist) && normalized_dist <= max_dist) {
+        all_matches[[length(all_matches) + 1]] <- list(start = i, end = i + len_seq - 1, is_fuzzy = TRUE, dist = normalized_dist)
     }
+  }
+  
+  # Sort matches by distance (best first)
+  if (length(all_matches) > 0) {
+    all_matches <- all_matches[order(sapply(all_matches, `[[`, "dist"))]
+    warning(paste("Used approximate matching to find", length(all_matches), "potential line sequence(s)."))
+  }
+
+  return(all_matches)
 }
 
-function apply_wrong_number_info(mapping) {
-    $(".wrong-number-report").remove();
-    $(".wrong-number-cell").each(function() {
-        this.style.removeProperty('background-image');
-        $(this).removeClass("wrong-number-cell");
-    });
 
-    if (!mapping || !mapping.wrong_number_info || !Array.isArray(mapping.wrong_number_info) || mapping.wrong_number_info.length === 0) {
-        return;
-    }
-
-    const cell_to_color = {};
-    if (mapping.reg_info) {
-        for (const reg_ind in mapping.reg_info) {
-            const info = mapping.reg_info[reg_ind];
-            if (info.color && info.cell_ids) {
-                info.cell_ids.split(',').forEach(id => {
-                    cell_to_color[id.trim()] = info.color;
-                });
-            }
-        }
-    }
-
-    const wrong_cases_by_tab = {};
-    mapping.wrong_number_info.forEach(case_item => {
-        const tabid = String(case_item.tabid);
-        if (!wrong_cases_by_tab[tabid]) wrong_cases_by_tab[tabid] = [];
-        wrong_cases_by_tab[tabid].push(case_item);
-
-        const cell_element = $("#" + case_item.cell_id);
-        if (cell_element.length > 0) {
-            cell_element.addClass("wrong-number-cell");
-            const reg_color = cell_to_color[case_item.cell_id] || '#f0f0f0';
-            const gradient = `linear-gradient(45deg, #cccccc, ${reg_color})`;
-            cell_element[0].style.setProperty('background-image', gradient, 'important');
-        }
-    });
-
-    for (const tabid in wrong_cases_by_tab) {
-        if (wrong_cases_by_tab.hasOwnProperty(tabid)) {
-            const cases_for_tab = wrong_cases_by_tab[tabid];
-            let report_html = '<div class="wrong-number-report">';
-            report_html += '<h6>Discrepancies Found (click to locate):</h6><ul>';
-            cases_for_tab.forEach(case_item => {
-                report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}" data-runid="${case_item.runid}" data-script-num="${case_item.script_num}" data-code-line="${case_item.code_line}" data-stata-number="${case_item.number_in_stata_output}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
-            });
-            report_html += '</ul></div>';
-
-            const table_container = $("#tabtab" + tabid + " .art-tab-div");
-            if (table_container.length > 0) {
-                table_container.append(report_html);
-            }
-        }
-    }
+f2p_all_fun_locs <- function(file_path) {
+  restore.point("fp_get_all_function_locations")
+  code = readLines(file_path)
+  funs_loc = extract_function_source(code)
+  funs_loc
 }
-
-function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
-    $("#dotabs a[href='#dotab_" + script_num + "']").tab("show");
-
-    setTimeout(function() {
-        const code_id = "#L" + line_num + "___" + script_num;
-        $(code_id).addClass("code-highlight");
-        last_code_highlight = code_id;
-
-        const targetElement = document.querySelector(code_id);
-        if (targetElement && !is_in_viewport(targetElement)) {
-            console.log("Scrolling code line into view...");
-            targetElement.scrollIntoView({ behavior: "smooth", block: "start" });
-        } else {
-            console.log("Code line already in view, not scrolling.");
-        }
-
-        if (runid_to_show && runid_to_show !== 'null') {
-            const log_container = $('#loginfo-' + line_num + '-' + script_num);
-
-            const do_log_show_and_scroll = function() {
-                const run_pre = $('#runid-' + runid_to_show);
-                if (run_pre.length > 0) {
-                    const scroll_and_highlight = function(pre_element) {
-                        if (!is_in_viewport(pre_element[0])) {
-                            console.log("Scrolling log into view...");
-                            pre_element[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        } else {
-                            console.log("Log already in view, not scrolling.");
-                        }
-                        if (typeof number_to_find !== 'undefined' && number_to_find !== null) {
-                            highlight_number_in_log(pre_element, number_to_find);
-                        }
-                    };
-
-                    const tab_pane = run_pre.closest('.tab-pane');
-                    if (tab_pane.length > 0) {
-                         const pane_id = tab_pane.attr('id');
-                         $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
-                             scroll_and_highlight(run_pre);
-                         }).tab('show');
-                    } else {
-                       scroll_and_highlight(run_pre);
-                    }
-                }
-            };
-
-            if (log_container.hasClass('in')) {
-                do_log_show_and_scroll();
-            } else {
-                log_container.one('shown.bs.collapse', do_log_show_and_scroll).collapse('show');
-            }
-        }
-    }, 150);
-}
-
-function highlight_cells(tabid, cell_ids_string) {
-    if (!tabid || !cell_ids_string) return;
-    $("#tabtabs a[href='#tabtab" + tabid + "']").tab("show");
-
-    setTimeout(function() {
-        const cell_ids = cell_ids_string.split(",");
-        cell_ids.forEach(id => {
-            const cell_selector = "#" + id.trim();
-            $(cell_selector).addClass("cell-highlight");
-            last_cell_highlights.push(cell_selector);
-        });
-        if (cell_ids.length > 0) {
-            const targetElement = document.querySelector("#" + cell_ids[0].trim());
-            if(targetElement) {
-               targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
-            }
-        }
-    }, 150);
-}
-
-function update_version_selector() {
-    const source = data_is_embedded ? all_maps : report_manifest;
-    const versions = Object.keys(source[active_map_type] || {});
-    const version_selector = $("#version_selector");
-    version_selector.empty();
-    versions.forEach(function(v) {
-        version_selector.append($("<option></option>").attr("value", v).text(v));
-    });
-}
-
-function update_all_cell_titles() {
-    const cell_map = active_mapping ? active_mapping.cell_map : null;
-
-    $("[id^=c][id*=_]").each(function() {
-        const cell_id = this.id;
-        let title_parts = [`cell_id: ${cell_id}`];
-        let has_conflict = false;
-
-        $(this).removeClass("conflict-indicator");
-
-        if (cell_map && cell_map[cell_id]) {
-            const info = cell_map[cell_id];
-            if (info.reg_ind != null) title_parts.push(`reg_ind: ${info.reg_ind}`);
-            if (info.runid != null) title_parts.push(`runid: ${info.runid}`);
-            if (info.script_file != null && info.code_line != null) {
-                title_parts.push(`script: ${info.script_file}, line: ${info.code_line}`);
-            }
-        }
-
-        if (typeof cell_conflict_data !== 'undefined' && cell_conflict_data[cell_id]) {
-            title_parts.push(cell_conflict_data[cell_id]);
-            has_conflict = true;
-        }
-
-        $(this).attr('title', title_parts.join('\n'));
-
-        if (has_conflict) {
-            $(this).addClass("conflict-indicator");
-        }
-    });
-}
-
-function handle_map_change() {
-    clear_all_highlights();
-
-    const apply_updates = (map_data) => {
-        active_mapping = map_data || {};
-        apply_static_coloring(active_mapping);
-        apply_wrong_number_info(active_mapping);
-        update_all_cell_titles();
-    };
-
-    if (data_is_embedded) {
-        const map_data = all_maps[active_map_type] ? all_maps[active_map_type][active_version] : null;
-        apply_updates(map_data);
-    } else {
-        const file_path = report_manifest[active_map_type]?.[active_version];
-        if (!file_path) {
-            apply_updates(null);
-            return;
-        }
-
-        const selectors = $("#map_type_selector, #version_selector");
-        selectors.prop("disabled", true);
-
-        fetch(file_path)
-            .then(response => {
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                return response.json();
-            })
-            .then(data => apply_updates(data))
-            .catch(error => {
-                console.error("Failed to fetch map data:", error);
-                alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
-                apply_updates(null);
-            })
-            .finally(() => selectors.prop("disabled", false));
-    }
-}
-
-$(document).ready(function() {
-    const map_types = Object.keys(data_is_embedded ? all_maps : report_manifest);
-    if (map_types.length === 0) {
-        $(".controls-div").hide();
-        return;
-    }
-
-    $("#map_type_selector").on("change", function() {
-        active_map_type = $(this).val();
-        update_version_selector();
-        $("#version_selector").trigger("change");
-    });
-
-    $("#version_selector").on("change", function() {
-        active_version = $(this).val();
-        handle_map_change();
-    });
-
-    $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
-        console.log("--- Cell Click Event ---");
-        console.log("Cell clicked:", event.currentTarget.id);
-        clear_all_highlights();
-        
-        const cell_id = event.currentTarget.id;
-        const cell_content = $(event.currentTarget).text();
-
-        if (active_mapping && active_mapping.cell_to_code_idx && active_mapping.code_locations) {
-            const location_idx = active_mapping.cell_to_code_idx[cell_id];
-            if (typeof location_idx !== 'undefined') {
-                const location_data = active_mapping.code_locations[location_idx];
-                $(event.currentTarget).addClass("cell-highlight");
-                last_cell_highlights.push("#" + cell_id);
-                
-                const runid = location_data[0];
-                const script_num = location_data[1];
-                const code_line = location_data[2];
-                highlight_code(script_num, code_line, runid, cell_content);
-            } else {
-                console.log("No code location found for cell:", cell_id);
-            }
-        }
-    });
-
-    $(document).on("click", ".reg-cmd", function(event) {
-        console.log("--- Reg-Cmd Click Event ---");
-        clear_all_highlights();
-
-        const code_el = $(event.currentTarget);
-        const code_id_parts = code_el.attr("id").split("___");
-        const line = code_id_parts[0].substring(1);
-        const script_num = code_id_parts[1];
-        const lookup_key = "s" + script_num + "_l" + line;
-
-        if (active_mapping && active_mapping.code_to_cells && active_mapping.code_to_cells[lookup_key]) {
-            const mapping = active_mapping.code_to_cells[lookup_key];
-            code_el.addClass("code-highlight");
-            last_code_highlight = "#" + code_el.attr("id");
-            highlight_cells(mapping.tabid, mapping.cell_ids);
-        }
-    });
-
-    $(document).on("click", ".wrong-number-report-item", function() {
-        console.log("--- Wrong Number Report Click ---");
-        clear_all_highlights();
-
-        const el = $(this);
-        const cell_id = el.data("cell-id");
-        const runid = el.data("runid");
-        const script_num = el.data("script-num");
-        const code_line = el.data("code-line");
-        const stata_number = el.data("stata-number");
-
-        if (cell_id) {
-            const cell_element = $("#" + cell_id);
-            if (cell_element.length > 0) {
-                const tab_pane = cell_element.closest('.tab-pane[id^=tabtab]');
-                if (tab_pane.length > 0) {
-                    const tab_id = tab_pane.attr('id');
-                    $('#tabtabs a[href="#' + tab_id + '"]').tab('show');
-                }
-                setTimeout(function() {
-                    cell_element[0].scrollIntoView({ behavior: "smooth", block: "center" });
-                    cell_element.addClass("wrong-number-report-highlight");
-                    cell_element.addClass("cell-highlight");
-                    last_cell_highlights.push("#" + cell_id);
-                }, 200);
-            }
-        }
-
-        if (script_num && script_num !== 'null' && code_line && code_line !== 'null') {
-            highlight_code(script_num, code_line, runid, stata_number);
-        }
-    });
-
-    active_map_type = $("#map_type_selector").val();
-    update_version_selector();
-    $("#version_selector").trigger("change");
-});
 ```
-!END_MODIFICATION report_map.js
+!END_MODIFICATION R/mod_loc.R
