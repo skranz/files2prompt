@@ -1,10 +1,3 @@
-# FILE: R/mod_addin.R
-#' @importFrom shiny fluidPage verbatimTextOutput actionButton observeEvent
-#' @importFrom shiny reactiveValues renderPrint shinyApp stopApp isolate runGadget
-#' @importFrom shiny uiOutput renderUI tagList h4 tags conditionalPanel reactive outputOptions req
-#' @importFrom miniUI miniPage gadgetTitleBar miniContentPanel miniTitleBarButton
-#' @keywords internal
-
 #' Navigate to a modification target in RStudio and select/highlight
 #'
 #' This function takes a *located* modification object and uses `rstudioapi`
@@ -35,7 +28,11 @@ navigate_to_modification_target <- function(mod, project_dir = tryCatch(rstudioa
       file.create(target_file)
     }
 
-    rstudioapi::navigateToFile(target_file)
+    rstudioapi::navigateToFile(target_file, line = start_line)
+    # A small delay helps ensure RStudio has processed the navigation
+    # before we attempt to set the selection, which improves reliability
+    # of the editor scrolling to the right position.
+    Sys.sleep(0.1)
 
     # Only attempt to select/position cursor if the location was found.
     if (isTRUE(mod$meta$location_found)) {

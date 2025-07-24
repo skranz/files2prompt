@@ -278,7 +278,7 @@ find_line_sequence <- function(source_lines, sequence_to_find, approximate = FAL
   # Sort matches by distance (best first)
   if (length(all_matches) > 0) {
     all_matches <- all_matches[order(sapply(all_matches, `[[`, "dist"))]
-    warning(paste("Used approximate matching to find", length(all_matches), "potential line sequence(s)."))
+    cat(paste("Used approximate matching to find", length(all_matches), "potential line sequence(s).\n"))
   }
 
   return(all_matches)
