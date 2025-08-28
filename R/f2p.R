@@ -276,6 +276,13 @@ fp_load_snippets <- function(package = "files2prompt") {
 }
 
 
+#' Provides a default main template.
+#' @return A simple string "{{files}}" to be used as the default template.
+#' @keywords internal
+fp_default_template = function() {
+  "{{files}}"
+}
+
 fp_default_file_template = function() {
 "
 # FILE: {{filename}}
