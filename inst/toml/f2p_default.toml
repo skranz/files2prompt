@@ -5,6 +5,7 @@ include_files  = '''
 *.r
 '''
 
-# Option for maximum number of files
-# reduces risk to accidentially run far too long
-opt_addin_ask_files = 20
+# To save to the project root, use a simple filename like:
+# opt_prompt_file = "my_prompt.md"
+opt_prompt_file = "<tempdir>/files2prompt.md"
+

@@ -1,3 +1,4 @@
+opt_prompt_file = "my_prompt.Rmd"
 
 ################################################
 # Which files go in?
@@ -6,21 +7,14 @@
 # We use globs instead of regular expressions
 ################################################
 
-
-
 # Here all included files will be defined
 # in the corresponding groups below.
 include_files = '''
 '''
 
 exclude_files = '''
-*f2p_*.toml
+f2p.toml
 '''
-
-# To save to the project root, use a simple filename like:
-# opt_prompt_file = "my_prompt.md"
-opt_prompt_file = "<tempdir>/files2prompt.md"
-
 
 ################################################
 # Global prompt template
@@ -44,9 +38,23 @@ Below are relevant files from my R project.
 
 {{R}}
 
-{{README}}
+################################################
+# Prompt Snippets
+################################################
 
-{{mod_instruct}}
+{{snippets}}
+
+################################################
+# Default TOML configs in inst/toml
+################################################
+
+{{tomls}}
+
+################################################
+# README (possible outdated)
+################################################
+
+{{README}}
 
 {{task}}
 '''
@@ -54,21 +62,13 @@ Below are relevant files from my R project.
 task = '''
 
 #######################################################
-# Coding Style
-#######################################################
-
-If you write R code follow the following style:
-
-- Prefer = for assignment instead of <-
-- In dplyr verbs don't use .data$x to asses a column x, just write x
-- For string operations use stringi, except for paste0.
-
-
-#######################################################
 # YOUR TASK
 #######################################################
 
 Please describe the code base and propose improvements.
+
+If you propose code changes also follow the format described in mod_instruct.md but only use file scope or function scope modifications. Function scope only for a single created / modified function in an R file. Otherwise file scope.
+
 '''
 
 ###########################################################
@@ -95,6 +95,16 @@ file_template = '''
 include_files  = '''
 R/*.R
 R/*.r
+'''
+
+[[snippets]]
+include_files  = '''
+inst/snippets/*.*
+'''
+
+[[tomls]]
+include_files  = '''
+inst/toml/*.toml
 '''
 
 [[README]]

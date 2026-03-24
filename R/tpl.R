@@ -1,3 +1,7 @@
+#' Replaces whiskers in a template string
+#' @param txt the tpl as a string
+#' @param values named list of values
+#' @export
 tpl_replace_whisker = function(txt, values, open = "{{", close = "}}", require_all_value=FALSE) {
   restore.point("tpl_replace_whisker")
   # Define regex with a capturing group for content inside {{ }}
