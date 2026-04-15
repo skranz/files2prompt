@@ -56,6 +56,10 @@ Below are relevant files from my R project.
 
 {{README}}
 
+# Structure of /inst directory
+
+{{inst}}
+
 {{task}}
 '''
 
@@ -91,6 +95,15 @@ file_template = '''
 ################################################
 # Special handling for R code
 ################################################
+
+[[inst]]
+tree_view = true
+include_files = '''
+R/**/*
+inst/**/*
+'''
+
+
 [[R]]
 include_files  = '''
 R/*.R

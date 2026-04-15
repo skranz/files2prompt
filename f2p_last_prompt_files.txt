@@ -3,6 +3,7 @@ R/addin.R
 R/code_tools.R
 R/extract_resp.R
 R/f2p_data.R
+R/f2p_file_tree.R
 R/f2p.R
 R/mod2_loc.R
 R/mod2_parser.R
@@ -15,8 +16,9 @@ R/mod_undo.R
 R/tools.R
 R/tpl.R
 README.md
-inst/snippets/mod_instruct.md
+inst/rstudio/addins.dcf
 inst/snippets/mod_instruct_no_lines.md
+inst/snippets/mod_instruct.md
 inst/toml/f2p_default.toml
 inst/toml/f2p_r_pkg.toml
 inst/toml/f2p_simple_r_files.toml

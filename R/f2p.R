@@ -78,8 +78,16 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
   for (g in names(groups)) {
     # Pass .main and snippets so that fp_find_group_files can use global vars for substitution
     files = fp_find_group_files(groups[[g]], root_dir=root_dir, values=c(.main, snippets))
-    groups[[g]]$.files = setdiff(files, all_files)
-    all_files = union(all_files, files)
+
+    # Check if we should consume the files or just pass them through (for tree_view)
+    consume = groups[[g]]$consume_files %||% (!isTRUE(groups[[g]]$tree_view))
+
+    if (consume) {
+      groups[[g]]$.files = setdiff(files, all_files)
+      all_files = union(all_files, files)
+    } else {
+      groups[[g]]$.files = files
+    }
   }
 
   if (verbose>0)
@@ -95,13 +103,55 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
     name = names(groups)[[i]]
     values = c(group, .main[setdiff(names(.main), names(group))])
     values = c(values, snippets[!names(snippets) %in% names(values)]) # Add snippets
-    file_tpl = group$file_template
-    if (is.null(file_tpl)) file_tpl = .main$file_template
-    values$filetext = sapply(group$.files, fp_filetext, group=group, verbose = (verbose >= 2))
-    # short file name
-    values$filepath = normalizePath(group$.files, mustWork = FALSE)
-    values$filename = basename(group$.files)
-    files_prompt = paste0(tpl_replace_whisker(file_tpl,values), collapse="\n")
+
+    if (isTRUE(group$tree_view)) {
+      # Use raw paths to preserve folder structure for files outside the project root
+      raw_paths <- normalizePath(unname(group$.files), winslash = "/", mustWork = FALSE)
+      norm_root <- normalizePath(root_dir, winslash = "/", mustWork = FALSE)
+
+      if (length(raw_paths) > 0 && all(startsWith(raw_paths, paste0(norm_root, "/")))) {
+        # All files are inside the project root
+        rel_paths <- sub(paste0("^", stringi::stri_replace_all_regex(norm_root, "([\\^\\$\\.\\*\\+\\?\\(\\)\\[\\]\\{\\}\\|])", "\\\\$1"), "/"), "", raw_paths)
+        root_name <- basename(norm_root)
+      } else if (length(raw_paths) > 0) {
+        # Files are external or mixed. Find the longest common directory prefix.
+        path_parts <- strsplit(raw_paths, "/")
+        min_len <- min(sapply(path_parts, length))
+        common_idx <- 0
+        if (min_len > 1) {
+          for (j in seq_len(min_len - 1)) {
+            if (length(unique(sapply(path_parts, `[`, j))) == 1) {
+              common_idx <- j
+            } else {
+              break
+            }
+          }
+        }
+        if (common_idx > 0) {
+          common_prefix <- paste(path_parts[[1]][1:common_idx], collapse = "/")
+          rel_paths <- substring(raw_paths, nchar(common_prefix) + 2) # +2 to strip trailing slash
+          root_name <- basename(common_prefix)
+        } else {
+          rel_paths <- raw_paths
+          root_name <- "."
+        }
+      } else {
+        rel_paths <- character(0)
+        root_name <- basename(norm_root)
+      }
+
+      files_prompt <- fp_generate_tree(rel_paths, root_name = root_name)
+      group$template <- group$template %||% fp_default_tree_template()
+    } else {
+      file_tpl = group$file_template
+      if (is.null(file_tpl)) file_tpl = .main$file_template
+      values$filetext = sapply(group$.files, fp_filetext, group=group, verbose = (verbose >= 2))
+      # short file name
+      values$filepath = normalizePath(group$.files, mustWork = FALSE)
+      values$filename = basename(group$.files)
+      files_prompt = paste0(tpl_replace_whisker(file_tpl,values), collapse="\n")
+    }
+
     if (is.null(group$template) | name==".main") {
       return(files_prompt)
     } else {
@@ -124,6 +174,8 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
   main_prompt = tpl_replace_whisker(main_tpl, values)
   main_prompt
 }
+
+
 
 #' Heuristic token counter
 #'
@@ -294,5 +346,19 @@ fp_default_file_template = function() {
 
 ---
 
+"
+}
+
+#' Provides a default template for the tree view output.
+#' @return A simple string wrapping the tree in a text block.
+#' @keywords internal
+#' Provides a default template for the tree view output.
+#' @return A simple string wrapping the tree in a text block.
+#' @keywords internal
+fp_default_tree_template = function() {
+"
+```text
+{{files}}
+```
 "
 }
