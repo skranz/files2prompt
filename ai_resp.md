@@ -1,86 +1,70 @@
-You have perfectly diagnosed the exact mechanism of the bug! 
+#' @keywords internal
+#' @importFrom shiny h4 hr p tags textOutput renderText actionButton observeEvent req uiOutput renderUI tagList stopApp runGadget dialogViewer
+#' @importFrom miniUI miniPage miniContentPanel gadgetTitleBar miniTitleBarButton
+#' @importFrom tools R_user_dir
+generate_prompt_addin = function() {
+  library(files2prompt)
+  restore.point("generate_prompt_addin")
 
-### What happened here?
-When `files2prompt` finds a file, it generates a `short_name` to be used for the file header (`{{filename}}`). 
-1. If the file is **inside** your current project directory (in your case, `repboxRun`), it smartly removes the project path, leaving just `R/script.R`.
-2. But if the file is **outside** the project root (like your absolute path to `/home/rstudio/.../drf/**/*`), it falls back to using R's `basename()` function. `basename()` strips *all* directory information, turning `/path/to/drf/subfolder/file.fst` into just `file.fst`. 
-
-Because our previous tree implementation relied on these `short_names`, it received a completely flat list of files and attached them to the name of your active project directory (`repboxRun`).
-
-### The Fix
-Instead of relying on the pre-processed `short_names`, we need to update the `tree_view` logic inside `files2prompt` to look at the **raw, absolute file paths**. 
-If it detects that the files are outside your project, it will calculate the longest common directory (in your case, `drf`), set that as the root node, and preserve all the internal subdirectories.
-
-Here is the modification block to apply this fix to `f2p.R`:
-
-!MODIFICATION files2prompt in f2p.R
-scope = "function"
-file = "R/f2p.R"
-function_name = "files2prompt"
-description = '''Update the tree_view logic in `files2prompt` to use raw absolute paths. If files are outside the project, calculate their longest common directory prefix so external folder hierarchies are accurately maintained.'''
----
-```r
-#' Build a prompt from text files
-#'
-#' Reads a TOML specification in the
-#' collects the matching files and returns the assembled prompt
-#' that can be parsed to a LLM
-#'
-#' @param config_file Path to the TOML config file.
-#' @param root_dir    Override the `root_dir` declared in the TOML.
-#'                    Use `NULL` (default) to respect the spec.
-#' @param open,close  Delimiters used in templates (default `{{ … }}`).
-#'
-#' @return A character vector of length 1 containing the final prompt.
-#' @importFrom RcppTOML parseTOML
-#' @importFrom stringi stri_split_fixed stri_trim_both
-#' @importFrom stringi stri_detect_regex stri_replace_all_fixed
-#' @importFrom stringi stri_match_all_regex
-#' @importFrom restorepoint restore.point
-#' @export
-files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=NULL, verbose=1) {
-  restore.point("files2prompt")
-
-  if (is.null(cfg)) {
-    if (!file.exists(config_file))
-      stop(paste0("config_file ", config_file, " not found."))
-    cfg = parseTOML(config_file, escape=FALSE)
-  } else {
-    config_file = cfg$config_file
-    if (is.null(config_file)) {
-      config_file = "custom config"
-    }
+  if (!requireNamespace("shiny", quietly = TRUE) || !requireNamespace("miniUI", quietly = TRUE)) {
+    stop("This add-in requires the {shiny} and {miniUI} packages. Please install them.")
+  }
+  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable("1.1.287")) {
+    stop("This add-in only works inside RStudio 1.1 or newer.")
   }
 
-  if (is.null(root_dir)) {
-    root_dir = cfg[["root_dir"]] %||% "."
+  # --- 1. PRE-PROCESSING (before UI) ---
+  proj = tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
+  root_dir = if (!is.null(proj) && dir.exists(proj)) proj else getwd()
+
+  config_file = addin_find_config_toml()
+  if (!file.exists(config_file)) {
+    stop("No config_file found, which should not happen due to built-in fallbacks.")
   }
-  if (verbose>0)
-    cat(paste0("\nCreate prompt for files in ", normalizePath(root_dir), " based on ", basename(config_file), ".\n"))
+  cfg = tryCatch(RcppTOML::parseTOML(config_file, escape = FALSE), error = function(e) {
+    stop("Error parsing TOML file '", config_file, "':\n", e$message)
+  })
 
-  # Load snippets to be available in templates
-  snippets <- fp_load_snippets()
-
+  # Find all files to be included by replicating logic from files2prompt()
   subgroup_names = names(cfg)[sapply(cfg, is.list)]
-
-  #main_files = fp_find_group_files(cfg, root_dir)
-  subgroups = lapply(subgroup_names, function(g) cfg[[g]][[1]])
+  subgroups = if (length(subgroup_names) > 0) lapply(subgroup_names, function(g) cfg[[g]][[1]]) else list()
   names(subgroups) = subgroup_names
   .main = cfg[setdiff(names(cfg), subgroup_names)]
   .main$template = .main$template %||% fp_default_template()
-  .main$file_template  = .main$file_template  %||% fp_default_file_template()
+  .main$file_template = .main$file_template %||% fp_default_file_template()
 
-  groups = c(subgroups, list(.main=.main))
-  # Find files for each group
-  # Omit duplicated files: every file will be shown only once
-  # groups that are specified earlier in the spec have precedence
-  all_files = NULL
-  g = ".main"
+  groups = c(subgroups, list(.main = .main))
+
+  main_tpl_vars = tryCatch(tpl_vars(.main$template), error = function(e) character(0))
+  has_files_placeholder = "files" %in% main_tpl_vars
+
+  group_names = names(groups)
+  named_group_names = setdiff(group_names, ".main")
+  explicit_group_names = intersect(named_group_names, main_tpl_vars)
+
+  # A group is used if it is explicitly referenced in the main template,
+  # or if it contributes to {{files}}. The .main group only contributes
+  # when {{files}} is present.
+  used_group_names = explicit_group_names
+  if (has_files_placeholder) {
+    used_group_names = union(used_group_names, setdiff(group_names, explicit_group_names))
+  }
+  used_group_names = intersect(group_names, used_group_names)
+
+  unused_block_names = setdiff(named_group_names, used_group_names)
+  used_block_names = intersect(named_group_names, used_group_names)
+
+  fmt_blocks = function(x) {
+    if (length(x) == 0) return("none")
+    paste(x, collapse = ", ")
+  }
+
+  all_files = c()
+  used_files = c()
+
   for (g in names(groups)) {
-    # Pass .main and snippets so that fp_find_group_files can use global vars for substitution
-    files = fp_find_group_files(groups[[g]], root_dir=root_dir, values=c(.main, snippets))
-    
-    # Check if we should consume the files or just pass them through (for tree_view)
+    files = fp_find_group_files(groups[[g]], root_dir = root_dir, values = .main)
+
     consume = groups[[g]]$consume_files %||% (!isTRUE(groups[[g]]$tree_view))
 
     if (consume) {
@@ -89,91 +73,198 @@ files2prompt = function(config_file,root_dir = NULL, open = "{", close="}",cfg=N
     } else {
       groups[[g]]$.files = files
     }
+
+    if (g %in% used_group_names) {
+      used_files = union(used_files, groups[[g]]$.files)
+    }
   }
 
-  if (verbose>0)
-    cat("\nWill add ", NROW(all_files), " files to prompt.\n")
+  num_files = length(used_files)
 
-
-  main_tpl = .main$template
-
-  i = length(groups)
-  prompts = sapply(seq_along(groups), function(i) {
-    group = groups[[i]]
-    if (length(group$.files)==0) return(NULL)
-    name = names(groups)[[i]]
-    values = c(group, .main[setdiff(names(.main), names(group))])
-    values = c(values, snippets[!names(snippets) %in% names(values)]) # Add snippets
-    
-    if (isTRUE(group$tree_view)) {
-      # Use raw paths to preserve folder structure for files outside the project root
-      raw_paths <- normalizePath(unname(group$.files), winslash = "/", mustWork = FALSE)
-      norm_root <- normalizePath(root_dir, winslash = "/", mustWork = FALSE)
-      
-      if (length(raw_paths) > 0 && all(startsWith(raw_paths, paste0(norm_root, "/")))) {
-        # All files are inside the project root
-        rel_paths <- sub(paste0("^", stringi::stri_replace_all_regex(norm_root, "([\\^\\$\\.\\*\\+\\?\\(\\)\\[\\]\\{\\}\\|])", "\\\\$1"), "/"), "", raw_paths)
-        root_name <- basename(norm_root)
-      } else if (length(raw_paths) > 0) {
-        # Files are external or mixed. Find the longest common directory prefix.
-        path_parts <- strsplit(raw_paths, "/")
-        min_len <- min(sapply(path_parts, length))
-        common_idx <- 0
-        if (min_len > 1) {
-          for (j in seq_len(min_len - 1)) {
-            if (length(unique(sapply(path_parts, `[`, j))) == 1) {
-              common_idx <- j
-            } else {
-              break
-            }
-          }
-        }
-        if (common_idx > 0) {
-          common_prefix <- paste(path_parts[[1]][1:common_idx], collapse = "/")
-          rel_paths <- substring(raw_paths, nchar(common_prefix) + 2) # +2 to strip trailing slash
-          root_name <- basename(common_prefix)
-        } else {
-          rel_paths <- raw_paths
-          root_name <- "."
-        }
+  # Persist last-prompt index for mod2 (relative to project root)
+  # One line per file; ignore files outside the project root.
+  # Use the files that are actually displayed as included in the dialog.
+  if (!is.null(proj) && dir.exists(proj)) {
+    rel = vapply(used_files, function(f) {
+      nf = normalizePath(f, mustWork = FALSE)
+      pr = normalizePath(proj, mustWork = FALSE)
+      if (stringi::stri_startswith_fixed(nf, paste0(pr, .Platform$file.sep))) {
+        sub(
+          paste0(
+            "^",
+            stringi::stri_replace_all_regex(
+              pr,
+              "([\\^\\$\\.\\*\\+\\?\\(\\)\\[\\]\\{\\}\\|])",
+              "\\\\$1"
+            ),
+            .Platform$file.sep
+          ),
+          "",
+          nf
+        )
       } else {
-        rel_paths <- character(0)
-        root_name <- basename(norm_root)
+        NA_character_
+      }
+    }, character(1))
+    rel = rel[!is.na(rel)]
+    try(f2p_last_prompt_index(proj, files = rel, action = "write"), silent = TRUE)
+  }
+
+  # --- Determine source of config file and button visibility ---
+  pkg_toml_dir = system.file("toml", package = "files2prompt")
+  user_config_dir = if (exists("R_user_dir", where = "package:tools")) {
+    try(tools::R_user_dir("files2prompt", which = "config"), silent = TRUE)
+  } else {
+    ""
+  }
+  if (inherits(user_config_dir, "try-error") || !nzchar(user_config_dir)) user_config_dir = NULL
+
+  norm_config_path = normalizePath(config_file, winslash = "/", mustWork = FALSE)
+  norm_pkg_path = normalizePath(pkg_toml_dir, winslash = "/", mustWork = FALSE)
+  norm_user_path = if (!is.null(user_config_dir)) normalizePath(user_config_dir, winslash = "/", mustWork = FALSE) else NULL
+  norm_proj_path = if (!is.null(proj)) normalizePath(proj, winslash = "/", mustWork = FALSE) else NULL
+
+  is_from_pkg = startsWith(norm_config_path, paste0(norm_pkg_path, "/"))
+  is_from_user = if (!is.null(norm_user_path)) startsWith(norm_config_path, paste0(norm_user_path, "/")) else FALSE
+  is_from_project = if (!is.null(norm_proj_path)) {
+    startsWith(norm_config_path, paste0(norm_proj_path, "/")) && !is_from_pkg && !is_from_user
+  } else {
+    FALSE
+  }
+
+  show_customize_project_btn = !is.null(proj) && (is_from_pkg || is_from_user)
+
+  show_customize_user_btn = FALSE
+  if (is_from_pkg) {
+    show_customize_user_btn = TRUE
+  } else if (is_from_project) {
+    pkg_template_files = list.files(pkg_toml_dir)
+    if (basename(config_file) %in% pkg_template_files) {
+      show_customize_user_btn = TRUE
+    }
+  }
+
+  ui = miniUI::miniPage(
+    miniUI::miniContentPanel(
+      shiny::h4(shiny::textOutput("info_text")),
+      shiny::hr(),
+      shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary"),
+      shiny::actionButton("cancel", "Cancel", class = ""),
+      shiny::hr(),
+      shiny::uiOutput("config_info_ui")
+    )
+  )
+
+  server = function(input, output, session) {
+    output$info_text = shiny::renderText({
+      paste("Found", num_files, "files to include in the prompt.")
+    })
+
+    output$config_info_ui = shiny::renderUI({
+      elements = list(
+        shiny::tags$p(shiny::tags$b("Using config:"), shiny::tags$br(), shiny::tags$code(config_file)),
+        shiny::tags$p(
+          style = "font-size: 85%; margin-bottom: 2px;",
+          shiny::tags$b("Used blocks: "),
+          fmt_blocks(used_block_names)
+        ),
+        shiny::tags$p(
+          style = "font-size: 85%; margin-bottom: 2px;",
+          shiny::tags$b("Unused blocks: "),
+          fmt_blocks(unused_block_names)
+        )
+      )
+
+      btn_list = list()
+      if (show_customize_project_btn) {
+        btn_list = c(btn_list, list(shiny::actionButton("customize_project", "Customize for Project", class = "btn-xs")))
+      }
+      if (show_customize_user_btn) {
+        btn_list = c(btn_list, list(shiny::actionButton("customize_user", "Customize for User", class = "btn-xs")))
       }
 
-      files_prompt <- fp_generate_tree(rel_paths, root_name = root_name)
-      group$template <- group$template %||% fp_default_tree_template()
-    } else {
-      file_tpl = group$file_template
-      if (is.null(file_tpl)) file_tpl = .main$file_template
-      values$filetext = sapply(group$.files, fp_filetext, group=group, verbose = (verbose >= 2))
-      # short file name
-      values$filepath = normalizePath(group$.files, mustWork = FALSE)
-      values$filename = basename(group$.files)
-      files_prompt = paste0(tpl_replace_whisker(file_tpl,values), collapse="\n")
-    }
-    
-    if (is.null(group$template) | name==".main") {
-      return(files_prompt)
-    } else {
-      values$files = files_prompt
-      res = tpl_replace_whisker(group$template,values)
-      return(res)
-    }
-  })
+      if (length(btn_list) > 0) {
+        elements = c(elements, list(shiny::tags$div(class = "btn-group", style = "margin-top: 10px;", btn_list)))
+      }
 
+      shiny::tagList(elements)
+    })
 
-  # Make main prompt
-  tpl_vars = tpl_vars(main_tpl)
+    observeEvent(input$customize_project, {
+      shiny::req(!is.null(proj))
+      dest_file = file.path(proj, basename(config_file))
+      if (file.exists(dest_file)) {
+        rstudioapi::showDialog("File Exists", "A file with this name already exists in your project. No action taken.")
+      } else {
+        file.copy(config_file, dest_file)
+        rstudioapi::showDialog("Copied", paste("Copied config to", dest_file, "and opening for edit."))
+        rstudioapi::navigateToFile(dest_file)
+      }
+    })
 
-  is_sep_group = names(groups) %in% tpl_vars
-  values = .main
-  values$files = paste0(unlist(prompts[!is_sep_group]), collapse="\n")
-  values[names(groups[is_sep_group])] = prompts[is_sep_group]
-  values = c(values, snippets[!names(snippets) %in% names(values)]) # Add snippets
+    observeEvent(input$customize_user, {
+      if (!exists("R_user_dir", where = "package:tools")) {
+        rstudioapi::showDialog("Unsupported", "User-level configuration requires a newer version of R.")
+        return()
+      }
+      user_config_dir = tools::R_user_dir("files2prompt", which = "config")
+      dir.create(user_config_dir, showWarnings = FALSE, recursive = TRUE)
+      dest_file = file.path(user_config_dir, basename(config_file))
 
-  main_prompt = tpl_replace_whisker(main_tpl, values)
-  main_prompt
+      if (file.exists(dest_file)) {
+        rstudioapi::showDialog("File Exists", paste("A config file already exists at:", dest_file, "No action taken."))
+        rstudioapi::navigateToFile(dest_file)
+      } else {
+        file.copy(config_file, dest_file)
+        rstudioapi::showDialog("Copied", paste("Copied config to", dest_file, "and opening for edit."))
+        rstudioapi::navigateToFile(dest_file)
+      }
+    })
+
+    observeEvent(input$make_prompt, {
+      prompt = files2prompt(config_file, root_dir = root_dir, verbose = 0)
+
+      opt_file = cfg$opt_prompt_file
+      if (is.null(opt_file)) {
+        outfile = file.path(tempdir(), "files2prompt.md")
+      } else {
+        if (startsWith(opt_file, "<tempdir>/")) {
+          filename = sub("<tempdir>/", "", opt_file, fixed = TRUE)
+          outfile = file.path(tempdir(), filename)
+        } else {
+          outfile = file.path(root_dir, opt_file)
+        }
+      }
+
+      dir.create(dirname(outfile), showWarnings = FALSE, recursive = TRUE)
+
+      writeLines(prompt, outfile)
+      cat("\nPrompt written to", outfile)
+
+      clip_res = NULL
+      if (requireNamespace("clipr", quietly = TRUE)) {
+        clip_res = try(clipr::write_clip(prompt), silent = TRUE)
+        if (!is(clip_res, "try-error")) cat(" and copied to clipboard.")
+      }
+      cat("\nEstimated token count:", guess_token_num(prompt), "\n")
+
+      rstudioapi::navigateToFile(outfile)
+      Sys.sleep(0.5)
+      ctx = rstudioapi::getSourceEditorContext()
+      if (isTRUE(try(normalizePath(ctx$path) == normalizePath(outfile)))) {
+        last_line = length(ctx$contents)
+        rng = rstudioapi::document_range(
+          rstudioapi::document_position(1, 1),
+          rstudioapi::document_position(last_line, nchar(ctx$contents[last_line]) + 1)
+        )
+        rstudioapi::setSelectionRanges(id = ctx$id, ranges = list(rng))
+      }
+      shiny::stopApp(invisible(prompt))
+    })
+
+    observeEvent(input$cancel, {
+      shiny::stopApp(invisible(NULL))
+    })
+  }
+  shiny::runGadget(ui, server, viewer = shiny::dialogViewer("Generate Prompt", width = 500, height = 350))
 }
-```
-!END_MODIFICATION files2prompt in f2p.R

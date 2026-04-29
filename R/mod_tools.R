@@ -11,35 +11,131 @@ find_project_file = function(file, root_dir) {
     return(normalizePath(file, winslash = "/"))
   }
 
-  full_path = file.path(root_dir, file)
+  full_path = file.path(root_dir, file_norm)
   if (file.exists(full_path)) {
     return(normalizePath(full_path, winslash = "/"))
   }
 
   has_path_sep = grepl("[/\\\\]", file_norm)
-  if (has_path_sep) {
+
+  if (!has_path_sep) {
+    fname = basename(file_norm)
+
+    all_files = list.files(
+      path = root_dir,
+      pattern = paste0("^", fname, "$"),
+      recursive = TRUE,
+      full.names = TRUE
+    )
+
+    if (length(all_files) == 0) {
+      return(NULL)
+    }
+
+    if (length(all_files) > 1) {
+      warning("Found multiple files named '", fname, "'. Using the first one found: ", all_files[1])
+    }
+
+    return(normalizePath(all_files[1], winslash = "/"))
+  }
+
+  rel_path = sub("^\\./", "", file_norm)
+  rel_parts = strsplit(rel_path, "/", fixed = TRUE)[[1]]
+  rel_parts = rel_parts[nzchar(rel_parts)]
+
+  if (length(rel_parts) == 0) {
     return(NULL)
   }
 
-  fname = basename(file_norm)
+  ancestor_dirs = character(0)
+  cur_dir = normalizePath(root_dir, winslash = "/", mustWork = FALSE)
 
-  all_files = list.files(
-    path = root_dir,
-    pattern = paste0("^", fname, "$"),
-    recursive = TRUE,
-    full.names = TRUE
-  )
+  repeat {
+    ancestor_dirs = c(ancestor_dirs, cur_dir)
+    parent_dir = normalizePath(dirname(cur_dir), winslash = "/", mustWork = FALSE)
+    if (identical(parent_dir, cur_dir)) break
+    cur_dir = parent_dir
+  }
 
-  if (length(all_files) == 0) {
+  candidates = character(0)
+
+  for (base_dir in ancestor_dirs) {
+    candidates = c(candidates, file.path(base_dir, rel_path))
+  }
+
+  for (base_dir in ancestor_dirs) {
+    base_name = basename(base_dir)
+    hit_idx = which(rel_parts == base_name)
+
+    if (length(hit_idx) == 0) next
+
+    for (idx in hit_idx) {
+      if (idx < length(rel_parts)) {
+        suffix = paste(rel_parts[(idx + 1):length(rel_parts)], collapse = "/")
+        candidates = c(candidates, file.path(base_dir, suffix))
+      } else {
+        candidates = c(candidates, base_dir)
+      }
+    }
+  }
+
+  candidates = unique(candidates)
+  found = candidates[file.exists(candidates)]
+
+  if (length(found) == 0) {
     return(NULL)
   }
 
-  if (length(all_files) > 1) {
-    warning("Found multiple files named '", fname, "'. Using the first one found: ", all_files[1])
+  found = unique(normalizePath(found, winslash = "/"))
+
+  if (length(found) > 1) {
+    warning(
+      "Found multiple candidate matches for path '", file, "'. Using the first one found: ",
+      found[1]
+    )
   }
 
-  normalizePath(all_files[1], winslash = "/")
+  found[1]
 }
+
+
+#
+# find_project_file = function(file, root_dir) {
+#   file_norm = gsub("\\\\", "/", file)
+#
+#   if (is_absolute_path(file) && file.exists(file)) {
+#     return(normalizePath(file, winslash = "/"))
+#   }
+#
+#   full_path = file.path(root_dir, file)
+#   if (file.exists(full_path)) {
+#     return(normalizePath(full_path, winslash = "/"))
+#   }
+#
+#   has_path_sep = grepl("[/\\\\]", file_norm)
+#   if (has_path_sep) {
+#     return(NULL)
+#   }
+#
+#   fname = basename(file_norm)
+#
+#   all_files = list.files(
+#     path = root_dir,
+#     pattern = paste0("^", fname, "$"),
+#     recursive = TRUE,
+#     full.names = TRUE
+#   )
+#
+#   if (length(all_files) == 0) {
+#     return(NULL)
+#   }
+#
+#   if (length(all_files) > 1) {
+#     warning("Found multiple files named '", fname, "'. Using the first one found: ", all_files[1])
+#   }
+#
+#   normalizePath(all_files[1], winslash = "/")
+# }
 
 
 #' Locate the AI response file for the modification add-in.
