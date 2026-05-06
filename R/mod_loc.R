@@ -110,6 +110,15 @@ locate_scope_function <- function(mod) {
   all_funs <- f2p_all_fun_locs(target_file)
   meta = mod$meta
 
+  all_funs = all_funs[
+    !is.na(all_funs$fun_name) &
+      nzchar(all_funs$fun_name) &
+      !is.na(all_funs$start_line_fun) &
+      !is.na(all_funs$end_line_fun),
+    ,
+    drop = FALSE
+  ]
+
   if ("insert_top" %in% names(meta)) {
     return(list(locations = list(list(start = 1, end = 0, is_fuzzy = FALSE)), error_msg = NULL))
   } else if ("insert_bottom" %in% names(meta)) {
@@ -123,15 +132,20 @@ locate_scope_function <- function(mod) {
                   error_msg = "No function name specified for replacement or relative insertion."))
   }
 
-  # Find exact matches
-  locs <- all_funs[all_funs$fun_name == fun_name, ]
+  if (nrow(all_funs) == 0) {
+    return(list(locations = list(),
+                error_msg = paste0("No named functions found in '", basename(target_file), "'.")))
+  }
 
-  # If no exact match, try fuzzy matching
+  match_idx = !is.na(all_funs$fun_name) & all_funs$fun_name == fun_name
+  locs <- all_funs[match_idx, , drop = FALSE]
+
   is_fuzzy_match <- FALSE
   if (nrow(locs) == 0) {
-      fuzzy_matches <- agrep(fun_name, all_funs$fun_name, max.distance = 0.2, value = TRUE)
+      candidate_names = all_funs$fun_name[!is.na(all_funs$fun_name)]
+      fuzzy_matches <- agrep(fun_name, candidate_names, max.distance = 0.2, value = TRUE)
       if (length(fuzzy_matches) > 0) {
-          locs <- all_funs[all_funs$fun_name %in% fuzzy_matches, ]
+          locs <- all_funs[all_funs$fun_name %in% fuzzy_matches, , drop = FALSE]
           is_fuzzy_match <- TRUE
       }
   }
@@ -141,7 +155,6 @@ locate_scope_function <- function(mod) {
                 error_msg = paste0("Function '", fun_name, "' not found in '", basename(target_file), "'.")))
   }
 
-  # Convert data.frame rows to a list of location objects
   potential_locations <- lapply(seq_len(nrow(locs)), function(i) {
     loc <- locs[i, ]
     if ("insert_after_fun" %in% names(meta)) {
@@ -149,12 +162,20 @@ locate_scope_function <- function(mod) {
     } else if ("insert_before_fun" %in% names(meta)) {
       list(start = loc$start_line_comment, end = loc$start_line_comment - 1, is_fuzzy = is_fuzzy_match)
     } else {
-      # It's a function replacement.
       has_roxygen_comments <- any(grepl("^\\s*#'", strsplit(mod$payload, "\n")[[1]]))
       start_replace_line <- if (has_roxygen_comments) loc$start_line_comment else loc$start_line_fun
       list(start = start_replace_line, end = loc$end_line_fun, is_fuzzy = is_fuzzy_match)
     }
   })
+
+  potential_locations = Filter(function(loc) {
+    !is.na(loc$start) && !is.na(loc$end)
+  }, potential_locations)
+
+  if (length(potential_locations) == 0) {
+    return(list(locations = list(),
+                error_msg = paste0("Function '", fun_name, "' had only malformed location candidates.")))
+  }
 
   list(locations = potential_locations, error_msg = NULL)
 }

@@ -1,270 +1,261 @@
-#' @keywords internal
-#' @importFrom shiny h4 hr p tags textOutput renderText actionButton observeEvent req uiOutput renderUI tagList stopApp runGadget dialogViewer
-#' @importFrom miniUI miniPage miniContentPanel gadgetTitleBar miniTitleBarButton
-#' @importFrom tools R_user_dir
-generate_prompt_addin = function() {
-  library(files2prompt)
-  restore.point("generate_prompt_addin")
+The main problem is very likely in `extract_function_source()`, not in the Shiny reviewer UI.
 
-  if (!requireNamespace("shiny", quietly = TRUE) || !requireNamespace("miniUI", quietly = TRUE)) {
-    stop("This add-in requires the {shiny} and {miniUI} packages. Please install them.")
-  }
-  if (!requireNamespace("rstudioapi", quietly = TRUE) || !rstudioapi::isAvailable("1.1.287")) {
-    stop("This add-in only works inside RStudio 1.1 or newer.")
-  }
+Your current parser treats many nested or anonymous `function(...)` expressions inside a function body as if they were separate named functions belonging to the outer assignment. For example, anonymous functions used in `lapply(...)`, `renderUI(...)`, `observeEvent(...)`, etc. can be attributed to the surrounding function name. That explains why a single target function can produce 10+ “potential matches”.
 
-  # --- 1. PRE-PROCESSING (before UI) ---
-  proj = tryCatch(rstudioapi::getActiveProject(), error = function(e) NULL)
-  root_dir = if (!is.null(proj) && dir.exists(proj)) proj else getwd()
+There is also a second bug in `locate_scope_function()`: this line can keep `NA` rows when `all_funs$fun_name` contains missing values:
 
-  config_file = addin_find_config_toml()
-  if (!file.exists(config_file)) {
-    stop("No config_file found, which should not happen due to built-in fallbacks.")
-  }
-  cfg = tryCatch(RcppTOML::parseTOML(config_file, escape = FALSE), error = function(e) {
-    stop("Error parsing TOML file '", config_file, "':\n", e$message)
-  })
+```r
+locs <- all_funs[all_funs$fun_name == fun_name, ]
+```
 
-  # Find all files to be included by replicating logic from files2prompt()
-  subgroup_names = names(cfg)[sapply(cfg, is.list)]
-  subgroups = if (length(subgroup_names) > 0) lapply(subgroup_names, function(g) cfg[[g]][[1]]) else list()
-  names(subgroups) = subgroup_names
-  .main = cfg[setdiff(names(cfg), subgroup_names)]
-  .main$template = .main$template %||% fp_default_template()
-  .main$file_template = .main$file_template %||% fp_default_file_template()
+In R, subsetting with `NA` does not drop the row. It creates rows with missing values, which can later trigger warnings such as “missing value where TRUE/FALSE needed”.
 
-  groups = c(subgroups, list(.main = .main))
+The fix is:
 
-  main_tpl_vars = tryCatch(tpl_vars(.main$template), error = function(e) character(0))
-  has_files_placeholder = "files" %in% main_tpl_vars
+1. Make `extract_function_source()` only return functions that are directly assigned to a name, e.g. `foo = function(...)` or `foo <- function(...)`.
+2. In `locate_scope_function()`, explicitly drop `NA` function names before exact or fuzzy matching.
 
-  group_names = names(groups)
-  named_group_names = setdiff(group_names, ".main")
-  explicit_group_names = intersect(named_group_names, main_tpl_vars)
+!MODIFICATION extract_function_source in R/code_tools.R
+scope = "function"
+file = "R/code_tools.R"
+function_name = "extract_function_source"
+description = '''Only return directly named function assignments, avoiding anonymous nested functions being misidentified as additional matches for the enclosing function.'''
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-  # A group is used if it is explicitly referenced in the main template,
-  # or if it contributes to {{files}}. The .main group only contributes
-  # when {{files}} is present.
-  used_group_names = explicit_group_names
-  if (has_files_placeholder) {
-    used_group_names = union(used_group_names, setdiff(group_names, explicit_group_names))
-  }
-  used_group_names = intersect(group_names, used_group_names)
+```r
+#' Extract locations of all named functions in a piece of code
+#'
+#' @param code A single character string or character vector containing R source code.
+#' @return A tibble with one row per directly assigned function and columns:
+#'         * fun_name - the symbol on the LHS of the assignment
+#'         * start_line_fun - line where the function assignment starts
+#'         * end_line_fun - line where the function assignment ends
+#'         * start_line_comment - first line of the contiguous comment block immediately above
+extract_function_source = function(code) {
+  restore.point("extract_function_source")
+  library(tibble)
+  library(dplyr)
 
-  unused_block_names = setdiff(named_group_names, used_group_names)
-  used_block_names = intersect(named_group_names, used_group_names)
+  stopifnot(is.character(code))
+  code = paste0(code, collapse = "\n")
+  if (is.null(code) || nchar(trimws(code)) == 0) return(tibble())
 
-  fmt_blocks = function(x) {
-    if (length(x) == 0) return("none")
-    paste(x, collapse = ", ")
-  }
-
-  all_files = c()
-  used_files = c()
-
-  for (g in names(groups)) {
-    files = fp_find_group_files(groups[[g]], root_dir = root_dir, values = .main)
-
-    consume = groups[[g]]$consume_files %||% (!isTRUE(groups[[g]]$tree_view))
-
-    if (consume) {
-      groups[[g]]$.files = setdiff(files, all_files)
-      all_files = union(all_files, files)
-    } else {
-      groups[[g]]$.files = files
+  pd = tryCatch(
+    utils::getParseData(parse(text = code, keep.source = TRUE)),
+    error = function(e) {
+      warning(
+        "Code parsing failed in extract_function_source ",
+        "(this is ok if the file is not R code or contains syntax errors). Error: ",
+        e$message
+      )
+      return(NULL)
     }
-
-    if (g %in% used_group_names) {
-      used_files = union(used_files, groups[[g]]$.files)
-    }
-  }
-
-  num_files = length(used_files)
-
-  # Persist last-prompt index for mod2 (relative to project root)
-  # One line per file; ignore files outside the project root.
-  # Use the files that are actually displayed as included in the dialog.
-  if (!is.null(proj) && dir.exists(proj)) {
-    rel = vapply(used_files, function(f) {
-      nf = normalizePath(f, mustWork = FALSE)
-      pr = normalizePath(proj, mustWork = FALSE)
-      if (stringi::stri_startswith_fixed(nf, paste0(pr, .Platform$file.sep))) {
-        sub(
-          paste0(
-            "^",
-            stringi::stri_replace_all_regex(
-              pr,
-              "([\\^\\$\\.\\*\\+\\?\\(\\)\\[\\]\\{\\}\\|])",
-              "\\\\$1"
-            ),
-            .Platform$file.sep
-          ),
-          "",
-          nf
-        )
-      } else {
-        NA_character_
-      }
-    }, character(1))
-    rel = rel[!is.na(rel)]
-    try(f2p_last_prompt_index(proj, files = rel, action = "write"), silent = TRUE)
-  }
-
-  # --- Determine source of config file and button visibility ---
-  pkg_toml_dir = system.file("toml", package = "files2prompt")
-  user_config_dir = if (exists("R_user_dir", where = "package:tools")) {
-    try(tools::R_user_dir("files2prompt", which = "config"), silent = TRUE)
-  } else {
-    ""
-  }
-  if (inherits(user_config_dir, "try-error") || !nzchar(user_config_dir)) user_config_dir = NULL
-
-  norm_config_path = normalizePath(config_file, winslash = "/", mustWork = FALSE)
-  norm_pkg_path = normalizePath(pkg_toml_dir, winslash = "/", mustWork = FALSE)
-  norm_user_path = if (!is.null(user_config_dir)) normalizePath(user_config_dir, winslash = "/", mustWork = FALSE) else NULL
-  norm_proj_path = if (!is.null(proj)) normalizePath(proj, winslash = "/", mustWork = FALSE) else NULL
-
-  is_from_pkg = startsWith(norm_config_path, paste0(norm_pkg_path, "/"))
-  is_from_user = if (!is.null(norm_user_path)) startsWith(norm_config_path, paste0(norm_user_path, "/")) else FALSE
-  is_from_project = if (!is.null(norm_proj_path)) {
-    startsWith(norm_config_path, paste0(norm_proj_path, "/")) && !is_from_pkg && !is_from_user
-  } else {
-    FALSE
-  }
-
-  show_customize_project_btn = !is.null(proj) && (is_from_pkg || is_from_user)
-
-  show_customize_user_btn = FALSE
-  if (is_from_pkg) {
-    show_customize_user_btn = TRUE
-  } else if (is_from_project) {
-    pkg_template_files = list.files(pkg_toml_dir)
-    if (basename(config_file) %in% pkg_template_files) {
-      show_customize_user_btn = TRUE
-    }
-  }
-
-  ui = miniUI::miniPage(
-    miniUI::miniContentPanel(
-      shiny::h4(shiny::textOutput("info_text")),
-      shiny::hr(),
-      shiny::actionButton("make_prompt", "Make Prompt", class = "btn-primary"),
-      shiny::actionButton("cancel", "Cancel", class = ""),
-      shiny::hr(),
-      shiny::uiOutput("config_info_ui")
-    )
   )
 
-  server = function(input, output, session) {
-    output$info_text = shiny::renderText({
-      paste("Found", num_files, "files to include in the prompt.")
-    })
-
-    output$config_info_ui = shiny::renderUI({
-      elements = list(
-        shiny::tags$p(shiny::tags$b("Using config:"), shiny::tags$br(), shiny::tags$code(config_file)),
-        shiny::tags$p(
-          style = "font-size: 85%; margin-bottom: 2px;",
-          shiny::tags$b("Used blocks: "),
-          fmt_blocks(used_block_names)
-        ),
-        shiny::tags$p(
-          style = "font-size: 85%; margin-bottom: 2px;",
-          shiny::tags$b("Unused blocks: "),
-          fmt_blocks(unused_block_names)
-        )
-      )
-
-      btn_list = list()
-      if (show_customize_project_btn) {
-        btn_list = c(btn_list, list(shiny::actionButton("customize_project", "Customize for Project", class = "btn-xs")))
-      }
-      if (show_customize_user_btn) {
-        btn_list = c(btn_list, list(shiny::actionButton("customize_user", "Customize for User", class = "btn-xs")))
-      }
-
-      if (length(btn_list) > 0) {
-        elements = c(elements, list(shiny::tags$div(class = "btn-group", style = "margin-top: 10px;", btn_list)))
-      }
-
-      shiny::tagList(elements)
-    })
-
-    observeEvent(input$customize_project, {
-      shiny::req(!is.null(proj))
-      dest_file = file.path(proj, basename(config_file))
-      if (file.exists(dest_file)) {
-        rstudioapi::showDialog("File Exists", "A file with this name already exists in your project. No action taken.")
-      } else {
-        file.copy(config_file, dest_file)
-        rstudioapi::showDialog("Copied", paste("Copied config to", dest_file, "and opening for edit."))
-        rstudioapi::navigateToFile(dest_file)
-      }
-    })
-
-    observeEvent(input$customize_user, {
-      if (!exists("R_user_dir", where = "package:tools")) {
-        rstudioapi::showDialog("Unsupported", "User-level configuration requires a newer version of R.")
-        return()
-      }
-      user_config_dir = tools::R_user_dir("files2prompt", which = "config")
-      dir.create(user_config_dir, showWarnings = FALSE, recursive = TRUE)
-      dest_file = file.path(user_config_dir, basename(config_file))
-
-      if (file.exists(dest_file)) {
-        rstudioapi::showDialog("File Exists", paste("A config file already exists at:", dest_file, "No action taken."))
-        rstudioapi::navigateToFile(dest_file)
-      } else {
-        file.copy(config_file, dest_file)
-        rstudioapi::showDialog("Copied", paste("Copied config to", dest_file, "and opening for edit."))
-        rstudioapi::navigateToFile(dest_file)
-      }
-    })
-
-    observeEvent(input$make_prompt, {
-      prompt = files2prompt(config_file, root_dir = root_dir, verbose = 0)
-
-      opt_file = cfg$opt_prompt_file
-      if (is.null(opt_file)) {
-        outfile = file.path(tempdir(), "files2prompt.md")
-      } else {
-        if (startsWith(opt_file, "<tempdir>/")) {
-          filename = sub("<tempdir>/", "", opt_file, fixed = TRUE)
-          outfile = file.path(tempdir(), filename)
-        } else {
-          outfile = file.path(root_dir, opt_file)
-        }
-      }
-
-      dir.create(dirname(outfile), showWarnings = FALSE, recursive = TRUE)
-
-      writeLines(prompt, outfile)
-      cat("\nPrompt written to", outfile)
-
-      clip_res = NULL
-      if (requireNamespace("clipr", quietly = TRUE)) {
-        clip_res = try(clipr::write_clip(prompt), silent = TRUE)
-        if (!is(clip_res, "try-error")) cat(" and copied to clipboard.")
-      }
-      cat("\nEstimated token count:", guess_token_num(prompt), "\n")
-
-      rstudioapi::navigateToFile(outfile)
-      Sys.sleep(0.5)
-      ctx = rstudioapi::getSourceEditorContext()
-      if (isTRUE(try(normalizePath(ctx$path) == normalizePath(outfile)))) {
-        last_line = length(ctx$contents)
-        rng = rstudioapi::document_range(
-          rstudioapi::document_position(1, 1),
-          rstudioapi::document_position(last_line, nchar(ctx$contents[last_line]) + 1)
-        )
-        rstudioapi::setSelectionRanges(id = ctx$id, ranges = list(rng))
-      }
-      shiny::stopApp(invisible(prompt))
-    })
-
-    observeEvent(input$cancel, {
-      shiny::stopApp(invisible(NULL))
-    })
+  if (is.null(pd) || nrow(pd) == 0) {
+    return(tibble())
   }
-  shiny::runGadget(ui, server, viewer = shiny::dialogViewer("Generate Prompt", width = 500, height = 350))
+
+  lines_vec = stringi::stri_split_fixed(code, "\n")[[1]]
+  fun_tokens = pd %>% filter(token == "FUNCTION")
+
+  if (nrow(fun_tokens) == 0) {
+    return(tibble())
+  }
+
+  get_direct_assignment_expr = function(function_expr_id) {
+    parent_id = pd$parent[pd$id == function_expr_id]
+    if (length(parent_id) != 1 || is.na(parent_id)) return(NA_integer_)
+
+    sibling_rows = which(pd$parent == parent_id)
+    sibling_tokens = pd$token[sibling_rows]
+
+    has_assignment = any(sibling_tokens %in% c("LEFT_ASSIGN", "EQ_ASSIGN", "RIGHT_ASSIGN"))
+    if (!has_assignment) return(NA_integer_)
+
+    child_expr_ids = pd$id[sibling_rows[pd$token[sibling_rows] == "expr"]]
+    if (!(function_expr_id %in% child_expr_ids)) return(NA_integer_)
+
+    parent_id
+  }
+
+  get_lhs_name = function(assign_expr_id, function_expr_id) {
+    child_rows = which(pd$parent == assign_expr_id)
+    child_rows = child_rows[order(pd$col1[child_rows])]
+
+    assign_rows = child_rows[pd$token[child_rows] %in% c("LEFT_ASSIGN", "EQ_ASSIGN", "RIGHT_ASSIGN")]
+    if (length(assign_rows) == 0) return(NA_character_)
+
+    assign_col = pd$col1[assign_rows[1]]
+
+    if (pd$token[assign_rows[1]] == "RIGHT_ASSIGN") {
+      lhs_expr_rows = child_rows[pd$token[child_rows] == "expr" & pd$col1[child_rows] > assign_col]
+    } else {
+      lhs_expr_rows = child_rows[pd$token[child_rows] == "expr" & pd$col2[child_rows] < assign_col]
+    }
+
+    if (length(lhs_expr_rows) == 0) return(NA_character_)
+
+    lhs_expr_id = pd$id[lhs_expr_rows[1]]
+    desc_rows = which(pd$parent == lhs_expr_id | pd$parent %in% pd$id[pd$parent == lhs_expr_id])
+    symbol_rows = desc_rows[pd$token[desc_rows] == "SYMBOL"]
+
+    if (length(symbol_rows) == 0) {
+      symbol_rows = which(pd$parent == lhs_expr_id & pd$token == "SYMBOL")
+    }
+
+    if (length(symbol_rows) == 0) return(NA_character_)
+    pd$text[symbol_rows[1]]
+  }
+
+  get_comment_start = function(start_line_fun) {
+    if (is.na(start_line_fun) || start_line_fun <= 1) return(start_line_fun)
+
+    i = start_line_fun - 1
+    while (i >= 1) {
+      line = stringi::stri_trim_both(lines_vec[i])
+      if (!stringi::stri_startswith_fixed(line, "#")) break
+      i = i - 1
+    }
+
+    i + 1
+  }
+
+  res = bind_rows(lapply(seq_len(nrow(fun_tokens)), function(i) {
+    ft = fun_tokens[i, ]
+    function_expr_id = ft$parent
+
+    assign_expr_id = get_direct_assignment_expr(function_expr_id)
+    if (is.na(assign_expr_id)) return(NULL)
+
+    assign_row = which(pd$id == assign_expr_id)
+    if (length(assign_row) != 1) return(NULL)
+
+    fun_name = get_lhs_name(assign_expr_id, function_expr_id)
+    if (is.na(fun_name) || !nzchar(fun_name)) return(NULL)
+
+    start_line_fun = pd$line1[assign_row]
+    end_line_fun = pd$line2[assign_row]
+
+    tibble(
+      fun_name = fun_name,
+      start_line_fun = start_line_fun,
+      end_line_fun = end_line_fun,
+      start_line_comment = get_comment_start(start_line_fun)
+    )
+  }))
+
+  if (nrow(res) == 0) {
+    return(tibble(
+      fun_name = character(0),
+      start_line_fun = integer(0),
+      end_line_fun = integer(0),
+      start_line_comment = integer(0)
+    ))
+  }
+
+  res %>%
+    filter(
+      !is.na(fun_name),
+      !is.na(start_line_fun),
+      !is.na(end_line_fun),
+      !is.na(start_line_comment)
+    ) %>%
+    distinct(fun_name, start_line_fun, end_line_fun, .keep_all = TRUE) %>%
+    arrange(start_line_fun)
 }
+```
+
+!END_MODIFICATION extract_function_source in R/code_tools.R
+
+!MODIFICATION locate_scope_function in R/mod_loc.R
+scope = "function"
+file = "R/mod_loc.R"
+function_name = "locate_scope_function"
+description = '''Drop malformed function-location rows before matching so NA rows cannot become bogus potential matches.'''
+---------------------------------------------------------------------------------------------------------------------------
+
+```r
+locate_scope_function <- function(mod) {
+  restore.point("locate_scope_function")
+  target_file <- mod$meta$file_path
+  if (!file.exists(target_file)) {
+    return(list(locations = list(),
+                error_msg = paste0("File '", basename(target_file), "' does not exist.")))
+  }
+  original_lines <- readLines(target_file, warn = FALSE)
+  all_funs <- f2p_all_fun_locs(target_file)
+  meta = mod$meta
+
+  all_funs = all_funs[
+    !is.na(all_funs$fun_name) &
+      nzchar(all_funs$fun_name) &
+      !is.na(all_funs$start_line_fun) &
+      !is.na(all_funs$end_line_fun),
+    ,
+    drop = FALSE
+  ]
+
+  if ("insert_top" %in% names(meta)) {
+    return(list(locations = list(list(start = 1, end = 0, is_fuzzy = FALSE)), error_msg = NULL))
+  } else if ("insert_bottom" %in% names(meta)) {
+    n_lines <- NROW(original_lines)
+    return(list(locations = list(list(start = n_lines + 1, end = n_lines, is_fuzzy = FALSE)), error_msg = NULL))
+  }
+
+  fun_name = meta$function_name %||% meta$insert_after_fun %||% meta$insert_before_fun
+  if (is.null(fun_name)) {
+      return(list(locations = list(),
+                  error_msg = "No function name specified for replacement or relative insertion."))
+  }
+
+  if (nrow(all_funs) == 0) {
+    return(list(locations = list(),
+                error_msg = paste0("No named functions found in '", basename(target_file), "'.")))
+  }
+
+  match_idx = !is.na(all_funs$fun_name) & all_funs$fun_name == fun_name
+  locs <- all_funs[match_idx, , drop = FALSE]
+
+  is_fuzzy_match <- FALSE
+  if (nrow(locs) == 0) {
+      candidate_names = all_funs$fun_name[!is.na(all_funs$fun_name)]
+      fuzzy_matches <- agrep(fun_name, candidate_names, max.distance = 0.2, value = TRUE)
+      if (length(fuzzy_matches) > 0) {
+          locs <- all_funs[all_funs$fun_name %in% fuzzy_matches, , drop = FALSE]
+          is_fuzzy_match <- TRUE
+      }
+  }
+
+  if (NROW(locs) == 0) {
+    return(list(locations = list(),
+                error_msg = paste0("Function '", fun_name, "' not found in '", basename(target_file), "'.")))
+  }
+
+  potential_locations <- lapply(seq_len(nrow(locs)), function(i) {
+    loc <- locs[i, ]
+    if ("insert_after_fun" %in% names(meta)) {
+      list(start = loc$end_line_fun + 1, end = loc$end_line_fun, is_fuzzy = is_fuzzy_match)
+    } else if ("insert_before_fun" %in% names(meta)) {
+      list(start = loc$start_line_comment, end = loc$start_line_comment - 1, is_fuzzy = is_fuzzy_match)
+    } else {
+      has_roxygen_comments <- any(grepl("^\\s*#'", strsplit(mod$payload, "\n")[[1]]))
+      start_replace_line <- if (has_roxygen_comments) loc$start_line_comment else loc$start_line_fun
+      list(start = start_replace_line, end = loc$end_line_fun, is_fuzzy = is_fuzzy_match)
+    }
+  })
+
+  potential_locations = Filter(function(loc) {
+    !is.na(loc$start) && !is.na(loc$end)
+  }, potential_locations)
+
+  if (length(potential_locations) == 0) {
+    return(list(locations = list(),
+                error_msg = paste0("Function '", fun_name, "' had only malformed location candidates.")))
+  }
+
+  list(locations = potential_locations, error_msg = NULL)
+}
+```
+
+!END_MODIFICATION locate_scope_function in R/mod_loc.R
